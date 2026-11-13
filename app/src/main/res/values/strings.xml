@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">JBL T230 Ctrl</string>
+    <string name="disclaimer_short">非官方工具，仅用于本机耳机互操作研究</string>
+</resources>

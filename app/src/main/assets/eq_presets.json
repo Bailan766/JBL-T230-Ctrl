@@ -1,0 +1,17 @@
+{
+  "source": "官方 jbl.stc.com 5.38.2 / assets/eq/jbl_tune230nc_tws.json（一手静态证据）",
+  "bands_hz": [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
+  "gain_range_db": [-6.0, 6.0],
+  "gain_step_db": 0.5,
+  "default_q": 1.0,
+  "is_using_preset_eq_payload": true,
+  "presets": [
+    { "id": "off",    "label": "Off",    "eq_id": 1, "category": 0, "cmd_index": 0,  "gains": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+    { "id": "jazz",   "label": "JAZZ",   "eq_id": 2, "category": 1, "cmd_index": 1,  "gains": [4, 2, 1, 2.5, -1.5, -1.5, 0, 1, 2, 4] },
+    { "id": "vocal",  "label": "VOCAL",  "eq_id": 3, "category": 2, "cmd_index": 2,  "gains": [-1.5, -3, -3, 1, 3.5, 3.5, 3, 1.5, 0, -1.5] },
+    { "id": "bass",   "label": "BASS",   "eq_id": 4, "category": 3, "cmd_index": 3,  "gains": [6, 3, 3, 2.5, 0.5, 0, 0, 0, 0, 0] },
+    { "id": "club",   "label": "CLUB",   "eq_id": 8, "category": 6, "cmd_index": 19, "gains": [1, 0, 1, 0, 0, 0, -2, 2, 0, 3] },
+    { "id": "studio", "label": "STUDIO", "eq_id": 9, "category": 7, "cmd_index": 20, "gains": [0, -2, -2, 0, 0, 0, 0, 0, 0, 0] }
+  ],
+  "note": "这 6 个预设及 10 段增益为官方 APK assets/eq/jbl_tune230nc_tws.json 的精确定义。写入走 Tune230Control -> BesEQControl 的 0x40（预设号）与 0x41/0x42/0x43（10段曲线多包传输），并带 0xA2 备援。"
+}

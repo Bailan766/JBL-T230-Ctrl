@@ -1,0 +1,24 @@
+# Build artefacts
+.gradle/
+.kotlin/
+build/
+app/build/
+local.properties
+keystore/*.keystore
+
+# Internal assistant / workspace metadata
+.workbuddy-ai/
+
+# Reverse-engineering intermediates and raw captures may contain
+# device addresses, serials and phone identifiers. NEVER commit them.
+reverse/apk/
+reverse/jadx-out/
+reverse/apktool-out/
+reverse/bugreport.zip
+reverse/tools/
+protocol-spec/captures/raw/
+protocol-spec/captures/*.log
+
+# IDE
+*.iml
+.idea/
