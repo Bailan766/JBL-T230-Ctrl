@@ -117,6 +117,15 @@ class SystemBaseline(private val context: Context) {
 
     @SuppressLint("MissingPermission", "DiscouragedApi")
     fun refresh() {
+        try {
+            refreshInternal()
+        } catch (e: Throwable) {
+            Log.w(TAG, "refresh error: ${e.message}", e)
+        }
+    }
+
+    @SuppressLint("MissingPermission", "DiscouragedApi")
+    private fun refreshInternal() {
         val a = adapter
         val bonded = a?.bondedDevices.orEmpty()
         val device = bonded.firstOrNull { it.address.equals(targetMac, ignoreCase = true) }

@@ -34,6 +34,7 @@ class ProtocolLog(private val capacity: Int = 300) {
             if (m.value.length > 80) "<LONG_HEX>" else m.value
         }
 
+    @Synchronized
     fun add(direction: String, frameHex: String, note: String = "") {
         val entry = LogEntry(
             time = formatter.format(Date()),
@@ -44,6 +45,7 @@ class ProtocolLog(private val capacity: Int = 300) {
         _entries.value = (_entries.value + entry).takeLast(capacity)
     }
 
+    @Synchronized
     fun clear() {
         _entries.value = emptyList()
     }

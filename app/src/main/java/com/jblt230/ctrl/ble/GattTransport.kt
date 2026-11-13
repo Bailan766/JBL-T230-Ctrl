@@ -69,66 +69,82 @@ class GattTransport(
     private val callback = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
-                Log.i(TAG, "GATT connected, requesting MTU ${config.mtu}")
-                _linkState.value = LinkState.Discovering(lastAddress)
-                g.requestMtu(config.mtu)
-            } else {
-                Log.w(TAG, "GATT disconnected status=$status newState=$newState")
-                _linkState.value = if (status == BluetoothGatt.GATT_SUCCESS) {
-                    LinkState.Disconnected
+            try {
+                if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
+                    Log.i(TAG, "GATT connected, requesting MTU ${config.mtu}")
+                    _linkState.value = LinkState.Discovering(lastAddress)
+                    g.requestMtu(config.mtu)
                 } else {
-                    LinkState.Failed("连接失败 status=$status")
+                    Log.w(TAG, "GATT disconnected status=$status newState=$newState")
+                    _linkState.value = if (status == BluetoothGatt.GATT_SUCCESS) {
+                        LinkState.Disconnected
+                    } else {
+                        LinkState.Failed("连接失败 status=$status")
+                    }
+                    teardown()
                 }
+            } catch (e: Throwable) {
+                Log.e(TAG, "onConnectionStateChange error", e)
+                _linkState.value = LinkState.Failed("GATT 状态异常: ${e.message ?: e.javaClass.simpleName}")
                 teardown()
             }
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
-            Log.i(TAG, "MTU=$mtu status=$status")
-            if (status == BluetoothGatt.GATT_SUCCESS && mtu > 23) {
-                negotiatedMtu = mtu
+            try {
+                Log.i(TAG, "MTU=$mtu status=$status")
+                if (status == BluetoothGatt.GATT_SUCCESS && mtu > 23) {
+                    negotiatedMtu = mtu
+                }
+                g.discoverServices()
+            } catch (e: Throwable) {
+                Log.e(TAG, "onMtuChanged error", e)
+                _linkState.value = LinkState.Failed("服务发现异常: ${e.message ?: e.javaClass.simpleName}")
             }
-            g.discoverServices()
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                _linkState.value = LinkState.Failed("服务发现失败 status=$status")
-                return
-            }
-            // Match official GenServiceDiscovery: switch connection interval to high priority
-            g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            try {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    _linkState.value = LinkState.Failed("服务发现失败 status=$status")
+                    return
+                }
+                // Match official GenServiceDiscovery: switch connection interval to high priority
+                runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
 
-            val service = g.getService(UUID.fromString(config.service))
-            if (service == null) {
-                _linkState.value = LinkState.Failed("未找到 Harman 控制服务 65786365-...-0000")
-                log.add("!", "", "control service not found on this device")
-                return
+                val service = g.getService(UUID.fromString(config.service))
+                if (service == null) {
+                    _linkState.value = LinkState.Failed("未找到 Harman 控制服务 65786365-...-0000")
+                    log.add("!", "", "control service not found on this device")
+                    return
+                }
+                notifyChar = service.getCharacteristic(UUID.fromString(config.notify))
+                writeChar = service.getCharacteristic(UUID.fromString(config.write))
+                val notify = notifyChar
+                if (notify == null || writeChar == null) {
+                    _linkState.value = LinkState.Failed("控制特征值缺失")
+                    return
+                }
+                g.setCharacteristicNotification(notify, true)
+                val descriptor = notify.getDescriptor(UUID.fromString(config.cccd))
+                if (descriptor == null) {
+                    _linkState.value = LinkState.Failed("CCCD 缺失")
+                    return
+                }
+                val value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                val ok = if (Build.VERSION.SDK_INT >= 33) {
+                    g.writeDescriptor(descriptor, value) == 0
+                } else {
+                    @Suppress("DEPRECATION")
+                    descriptor.value = value
+                    @Suppress("DEPRECATION")
+                    g.writeDescriptor(descriptor)
+                }
+                if (!ok) _linkState.value = LinkState.Failed("订阅通知失败")
+            } catch (e: Throwable) {
+                Log.e(TAG, "onServicesDiscovered error", e)
+                _linkState.value = LinkState.Failed("订阅异常: ${e.message ?: e.javaClass.simpleName}")
             }
-            notifyChar = service.getCharacteristic(UUID.fromString(config.notify))
-            writeChar = service.getCharacteristic(UUID.fromString(config.write))
-            val notify = notifyChar
-            if (notify == null || writeChar == null) {
-                _linkState.value = LinkState.Failed("控制特征值缺失")
-                return
-            }
-            g.setCharacteristicNotification(notify, true)
-            val descriptor = notify.getDescriptor(UUID.fromString(config.cccd))
-            if (descriptor == null) {
-                _linkState.value = LinkState.Failed("CCCD 缺失")
-                return
-            }
-            val value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            val ok = if (Build.VERSION.SDK_INT >= 33) {
-                g.writeDescriptor(descriptor, value) == 0
-            } else {
-                @Suppress("DEPRECATION")
-                descriptor.value = value
-                @Suppress("DEPRECATION")
-                g.writeDescriptor(descriptor)
-            }
-            if (!ok) _linkState.value = LinkState.Failed("订阅通知失败")
         }
 
         override fun onDescriptorWrite(

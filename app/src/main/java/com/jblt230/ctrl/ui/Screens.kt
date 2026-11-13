@@ -406,7 +406,8 @@ private fun SoundScreen(state: UiState, vm: AppViewModel) {
             EqCurve(state.eqGains)
             Spacer(Modifier.height(6.dp))
             vm.bandHz.forEachIndexed { index, hz ->
-                val gain = state.eqGains.getOrNull(index) ?: 0f
+                val rawGain = state.eqGains.getOrNull(index) ?: 0f
+                val gain = if (rawGain.isFinite()) rawGain.coerceIn(-6f, 6f) else 0f
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         if (hz >= 1000) "${hz / 1000}k" else "$hz",
