@@ -193,7 +193,12 @@ class GattTransport(
         negotiatedMtu = config.mtu
         _linkState.value = LinkState.Connecting(lastAddress)
         log.add("i", "", "连接控制链路 ${log.redact(device.address)}")
-        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        gatt = try {
+            device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: Throwable) {
+            Log.e(TAG, "connectGatt error: ${e.message}", e)
+            null
+        }
         return gatt != null
     }
 

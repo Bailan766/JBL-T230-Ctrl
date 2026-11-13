@@ -98,34 +98,43 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch {
-            base.update { it.copy(message = "正在查找已配对的 JBL TUNE230...") }
-            val adapter = BluetoothAdapter.getDefaultAdapter()
-            val classic = scanner.findClassicDevice(adapter, null)
-            if (classic == null) {
-                base.update {
-                    it.copy(message = "未找到已配对的 JBL TUNE230。请先在系统蓝牙设置里配对耳机。")
+            try {
+                base.update { it.copy(message = "正在查找已配对的 JBL TUNE230...") }
+                val adapter = BluetoothAdapter.getDefaultAdapter()
+                val classic = scanner.findClassicDevice(adapter, null)
+                if (classic == null) {
+                    base.update {
+                        it.copy(message = "未找到已配对的 JBL TUNE230。请先在系统蓝牙设置里配对耳机。")
+                    }
+                    return@launch
                 }
-                return@launch
-            }
-            system.start(classic.address)
+                system.start(classic.address)
 
-            var ready: LinkState.Ready? = null
-            base.update { it.copy(message = "扫描 JBL TUNE230NC TWS-LE 控制侧...") }
-            val le = scanner.scanForLeSide(adapter)
-            if (le != null) ready = connectAndWait(le)
-            if (ready == null) {
-                transport.release()
-                base.update { it.copy(message = "LE 扫描未命中，回退直连 classic 地址...") }
-                ready = connectAndWait(classic)
-            }
-            if (ready == null) {
-                base.update {
-                    it.copy(message = "未能建立控制链路。系统层状态仍可用；固件级功能保持未验证。")
+                var ready: LinkState.Ready? = null
+                base.update { it.copy(message = "扫描 JBL TUNE230NC TWS-LE 控制侧...") }
+                val le = scanner.scanForLeSide(adapter)
+                if (le != null) ready = connectAndWait(le)
+                if (ready == null) {
+                    transport.release()
+                    base.update { it.copy(message = "LE 扫描未命中，回退直连 classic 地址...") }
+                    ready = connectAndWait(classic)
                 }
-                return@launch
+                if (ready == null) {
+                    base.update {
+                        it.copy(message = "未能建立控制链路。系统层状态仍可用；固件级功能保持未验证。")
+                    }
+                    return@launch
+                }
+                base.update { it.copy(message = "控制链路已建立，正在执行官方握手与全量状态回读...") }
+                refreshAll()
+            } catch (e: Throwable) {
+                base.update {
+                    it.copy(
+                        link = LinkState.Failed("连接异常: ${e.message ?: e.javaClass.simpleName}"),
+                        message = "连接异常: ${e.message ?: e.javaClass.simpleName}"
+                    )
+                }
             }
-            base.update { it.copy(message = "控制链路已建立，正在执行官方握手与全量状态回读...") }
-            refreshAll()
         }
     }
 
@@ -147,23 +156,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshAll() {
         viewModelScope.launch {
-            if (!state.value.controlReady) {
+            try {
+                if (!state.value.controlReady) {
+                    system.refresh()
+                    return@launch
+                }
+                readDeviceInfoAndHandshake()
+                readAllStatus()
+                readBattery()
+                readNoiseState()
+                readEqState()
+                readGestures()
+                readSmartAudioVideo()
+                readVoiceAware()
+                readWearingAndTips()
+                readPowerAndVoicePrompts()
+                readSecondaryDeviceMeta()
                 system.refresh()
-                return@launch
+                base.update { it.copy(message = "全量状态回读完成。") }
+            } catch (e: Throwable) {
+                base.update { it.copy(message = "回读状态异常: ${e.message ?: e.javaClass.simpleName}") }
             }
-            readDeviceInfoAndHandshake()
-            readAllStatus()
-            readBattery()
-            readNoiseState()
-            readEqState()
-            readGestures()
-            readSmartAudioVideo()
-            readVoiceAware()
-            readWearingAndTips()
-            readPowerAndVoicePrompts()
-            readSecondaryDeviceMeta()
-            system.refresh()
-            base.update { it.copy(message = "全量状态回读完成。") }
         }
     }
 

@@ -13,6 +13,7 @@ import android.content.IntentFilter
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -77,8 +78,16 @@ class SystemBaseline(private val context: Context) {
             addAction(ACTION_VOLUME_CHANGED)
             addAction(ACTION_BATTERY_LEVEL_CHANGED)
         }
-        context.registerReceiver(receiver, filter)
-        registered = true
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                context.registerReceiver(receiver, filter)
+            }
+            registered = true
+        } catch (e: Throwable) {
+            Log.w(TAG, "registerReceiver error: ${e.message}", e)
+        }
 
         val listener = object : BluetoothProfile.ServiceListener {
             override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
@@ -171,6 +180,7 @@ class SystemBaseline(private val context: Context) {
     }
 
     companion object {
+        private const val TAG = "SystemBaseline"
         // Hidden framework constants, referenced by literal to stay compilable.
         private const val ACTION_VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
         private const val ACTION_BATTERY_LEVEL_CHANGED =

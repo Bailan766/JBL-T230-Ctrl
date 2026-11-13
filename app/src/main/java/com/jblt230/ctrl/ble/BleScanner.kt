@@ -54,14 +54,14 @@ class BleScanner(private val config: ScanConfig) {
         return try {
             scanner.startScan(null, settings, callback)
             withTimeoutOrNull(config.scanTimeoutMs) { deferred.await() }
-        } catch (e: SecurityException) {
-            Log.w(TAG, "BLUETOOTH_SCAN not granted", e)
+        } catch (e: Throwable) {
+            Log.w(TAG, "LE scan error: ${e.message}", e)
             null
         } finally {
             try {
                 scanner.stopScan(callback)
-            } catch (ignored: SecurityException) {
-                // Permission can be revoked while scanning; nothing to clean up.
+            } catch (ignored: Throwable) {
+                // Ignore any error on stopping scan
             }
         }
     }
