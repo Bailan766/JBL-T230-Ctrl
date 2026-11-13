@@ -98,7 +98,11 @@ class CommandTable private constructor(
             }
 
             val blacklist = root.getJSONArray("blacklist").let { arr ->
-                (0 until arr.length()).mapNotNull { arr.getString(it).toIntOrNull(16) }.toSet()
+                (0 until arr.length())
+                    .map { arr.getString(it) }
+                    .filter { it.length <= 2 }
+                    .mapNotNull { it.toIntOrNull(16) }
+                    .toSet()
             }
 
             return CommandTable(
