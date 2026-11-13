@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.jblt230.ctrl.BuildConfig
 import com.jblt230.ctrl.ble.GestureFunctionGroup
 import com.jblt230.ctrl.ble.LinkState
 import com.jblt230.ctrl.ble.NoiseMode
@@ -93,7 +94,7 @@ fun AppRoot(vm: AppViewModel, onRequestPermissions: () -> Unit) {
             topBar = {
                 TopAppBar(title = {
                     Column {
-                        Text("JBL T230 Ctrl", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Text("JBL T230 Ctrl v${BuildConfig.VERSION_NAME}", fontWeight = FontWeight.Bold, fontSize = 18.sp)
                         Text("非官方 · 互操作研究 · ${vm.deviceLabel}", fontSize = 11.sp, color = Muted)
                     }
                 })
