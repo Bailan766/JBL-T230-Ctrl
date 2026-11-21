@@ -25,11 +25,11 @@ import com.jblt230.ctrl.ble.NoiseMode
 import com.jblt230.ctrl.ble.SmartAudioMode
 import com.jblt230.ctrl.ble.WriteResult
 import com.jblt230.ctrl.bridge.BridgeContract
-import com.jblt230.ctrl.bridge.ColorOsBridge
-import com.jblt230.ctrl.bridge.ColorOsPrefs
-import com.jblt230.ctrl.bridge.ColorOsSpoofConfig
 import com.jblt230.ctrl.bridge.EarbudsPopupOverlay
 import com.jblt230.ctrl.bridge.JblBridgeService
+import com.jblt230.ctrl.bridge.TakeoverBridge
+import com.jblt230.ctrl.bridge.TakeoverConfig
+import com.jblt230.ctrl.bridge.TakeoverPrefs
 import com.jblt230.ctrl.logging.ProtocolLog
 import com.jblt230.ctrl.protocol.CommandTable
 import com.jblt230.ctrl.protocol.Confidence
@@ -66,10 +66,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val scanner = BleScanner(table.scan)
     private val system = SystemBaseline(app)
     private val eqStore = EqPresetStore(app)
-    private val colorOsPrefs = ColorOsPrefs(app)
+    private val takeoverPrefs = TakeoverPrefs(app)
 
-    private val _colorOsConfig = MutableStateFlow(colorOsPrefs.loadConfig())
-    val colorOsConfig: StateFlow<ColorOsSpoofConfig> = _colorOsConfig
+    private val _takeoverConfig = MutableStateFlow(takeoverPrefs.loadConfig())
+    val takeoverConfig: StateFlow<TakeoverConfig> = _takeoverConfig
+
+    private val _overlayGranted = MutableStateFlow(EarbudsPopupOverlay.canDrawOverlays(app))
+    val overlayGranted: StateFlow<Boolean> = _overlayGranted
 
     private var bridgeRelayRegistered = false
     private val bridgeRelayReceiver = object : BroadcastReceiver() {
@@ -81,6 +84,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         NoiseMode.valueOf(intent.getStringExtra(BridgeContract.EXTRA_NOISE_MODE) ?: "OFF")
                     }.getOrDefault(NoiseMode.OFF)
                     setNoiseMode(mode)
+                }
+                BridgeContract.CMD_CYCLE_NOISE_MODE -> {
+                    setNoiseMode(BridgeContract.nextQuickNoiseMode(state.value.noiseMode))
                 }
                 BridgeContract.CMD_SET_EQ_PRESET -> {
                     val presetId = intent.getStringExtra(BridgeContract.EXTRA_EQ_PRESET) ?: "off"
@@ -142,7 +148,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     a.system.systemBattery == b.system.systemBattery &&
                     a.deviceInfo?.firmwareVersion == b.deviceInfo?.firmwareVersion
             }.collect { s ->
-                ColorOsBridge.pushUiState(getApplication(), s, triggerPopup = false)
+                TakeoverBridge.pushUiState(getApplication(), s, triggerPopup = false)
             }
         }
     }
@@ -183,7 +189,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 system.start(classic.address)
-                ColorOsBridge.foregroundLinkActive.set(true)
+                TakeoverBridge.foregroundLinkActive.set(true)
 
                 var ready: LinkState.Ready? = null
                 base.update { it.copy(message = "扫描 JBL TUNE230NC TWS-LE 控制侧...") }
@@ -195,7 +201,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     ready = connectAndWait(classic)
                 }
                 if (ready == null) {
-                    ColorOsBridge.foregroundLinkActive.set(false)
+                    TakeoverBridge.foregroundLinkActive.set(false)
                     base.update {
                         it.copy(message = "未能建立控制链路。系统层状态仍可用；固件级功能保持未验证。")
                     }
@@ -204,7 +210,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 base.update { it.copy(message = "控制链路已建立，正在执行官方握手与全量状态回读...") }
                 refreshAll()
             } catch (e: Throwable) {
-                ColorOsBridge.foregroundLinkActive.set(false)
+                TakeoverBridge.foregroundLinkActive.set(false)
                 base.update {
                     it.copy(
                         link = LinkState.Failed("连接异常: ${e.message ?: e.javaClass.simpleName}"),
@@ -225,7 +231,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun disconnect() {
         findBudsAutoStopJob?.cancel()
-        ColorOsBridge.foregroundLinkActive.set(false)
+        TakeoverBridge.foregroundLinkActive.set(false)
         transport.release()
         base.update {
             it.copy(message = "已释放控制链路，蓝牙音频 A2DP 不受影响。")
@@ -1235,7 +1241,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         system.refresh()
     }
 
-    fun canDrawOverlays(): Boolean = EarbudsPopupOverlay.canDrawOverlays(getApplication())
+    fun refreshOverlayPermission() {
+        _overlayGranted.value = EarbudsPopupOverlay.canDrawOverlays(getApplication())
+    }
 
     fun openOverlaySettings() {
         val ctx = getApplication<Application>()
@@ -1246,16 +1254,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { ctx.startActivity(intent) }
     }
 
-    fun updateColorOsConfig(transform: (ColorOsSpoofConfig) -> ColorOsSpoofConfig) {
-        val next = transform(_colorOsConfig.value)
-        _colorOsConfig.value = next
-        colorOsPrefs.saveConfig(next)
-        ColorOsBridge.pushUiState(getApplication(), state.value, triggerPopup = false)
+    fun updateTakeoverConfig(transform: (TakeoverConfig) -> TakeoverConfig) {
+        val next = transform(_takeoverConfig.value)
+        _takeoverConfig.value = next
+        takeoverPrefs.saveConfig(next)
+        TakeoverBridge.pushUiState(getApplication(), state.value, triggerPopup = false)
     }
 
-    fun syncToColorOs(triggerPopup: Boolean = false) {
+    fun triggerTakeoverSync(triggerPopup: Boolean = false) {
         val ctx = getApplication<Application>()
-        if (triggerPopup && !EarbudsPopupOverlay.canDrawOverlays(ctx)) {
+        refreshOverlayPermission()
+        if (triggerPopup && !_overlayGranted.value) {
             base.update {
                 it.copy(message = "请先开启“显示在其他应用上层 / 悬浮窗”权限，才能弹出免 Root 开盖卡片。")
             }
@@ -1275,8 +1284,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             current
         }
-        ColorOsBridge.pushUiState(ctx, effective, triggerPopup = triggerPopup)
-        if (!current.controlReady && !ColorOsBridge.foregroundLinkActive.get()) {
+        TakeoverBridge.pushUiState(ctx, effective, triggerPopup = triggerPopup)
+        if (!current.controlReady && !TakeoverBridge.foregroundLinkActive.get()) {
             val svcIntent = Intent(ctx, JblBridgeService::class.java).apply {
                 putExtra(BridgeContract.EXTRA_CMD, BridgeContract.CMD_CONNECT_AND_SYNC)
                 putExtra(BridgeContract.EXTRA_TRIGGER_POPUP, triggerPopup)
@@ -1292,7 +1301,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         base.update {
             it.copy(
                 message = if (triggerPopup) {
-                    "已弹出免 Root 实时电量与降噪快捷卡片。"
+                    "已弹出免 Root 实时电量与降噪快捷卡片（支持下拉关闭）。"
                 } else {
                     "已触发后台同步耳机最新三端电量与状态。"
                 }
@@ -1344,7 +1353,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         findBudsAutoStopJob?.cancel()
-        ColorOsBridge.foregroundLinkActive.set(false)
+        TakeoverBridge.foregroundLinkActive.set(false)
         if (bridgeRelayRegistered) {
             runCatching { getApplication<Application>().unregisterReceiver(bridgeRelayReceiver) }
             bridgeRelayRegistered = false

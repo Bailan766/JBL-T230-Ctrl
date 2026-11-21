@@ -20,7 +20,7 @@ class JblBridgeReceiver : BroadcastReceiver() {
     @SuppressLint("MissingPermission")
     override fun onReceive(context: Context?, intent: Intent?) {
         if (context == null || intent == null) return
-        val prefs = ColorOsPrefs(context)
+        val prefs = TakeoverPrefs(context)
         val cfg = prefs.loadConfig()
         if (!cfg.enabled) return
 
@@ -66,7 +66,7 @@ class JblBridgeReceiver : BroadcastReceiver() {
 
                 Log.i(TAG, "JBL Tune 230NC connected ($name / $action), launching standalone takeover sync")
 
-                if (cfg.autoPopupOnConnect && !ColorOsBridge.foregroundLinkActive.get()) {
+                if (cfg.autoPopupOnConnect && !TakeoverBridge.foregroundLinkActive.get()) {
                     val sysLevel = runCatching { BatteryReflection.read(device).level }.getOrNull()
                     val cached = prefs.loadSnapshot().copy(mac = device.address)
                     val initial = if (sysLevel != null && cached.leftBattery == null) {
@@ -74,7 +74,7 @@ class JblBridgeReceiver : BroadcastReceiver() {
                     } else {
                         cached
                     }
-                    ColorOsBridge.pushRawSnapshot(
+                    TakeoverBridge.pushRawSnapshot(
                         context = context,
                         snap = initial,
                         deviceName = name ?: "JBL TUNE230NC TWS",

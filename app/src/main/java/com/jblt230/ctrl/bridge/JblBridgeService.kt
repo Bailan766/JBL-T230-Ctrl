@@ -51,7 +51,7 @@ class JblBridgeService : Service() {
     private lateinit var transport: GattTransport
     private lateinit var queue: CommandQueue
     private lateinit var scanner: BleScanner
-    private lateinit var prefs: ColorOsPrefs
+    private lateinit var prefs: TakeoverPrefs
 
     override fun onCreate() {
         super.onCreate()
@@ -61,7 +61,7 @@ class JblBridgeService : Service() {
         transport = GattTransport(this, table.gatt, guard, log)
         queue = CommandQueue(transport, table, guard, log)
         scanner = BleScanner(table.scan)
-        prefs = ColorOsPrefs(this)
+        prefs = TakeoverPrefs(this)
         ensureChannel()
     }
 
@@ -99,7 +99,7 @@ class JblBridgeService : Service() {
         eqPreset: String?,
         findEnabled: Boolean
     ) {
-        if (ColorOsBridge.foregroundLinkActive.get()) {
+        if (TakeoverBridge.foregroundLinkActive.get()) {
             // Foreground AppViewModel owns the sole GATT link: relay remote commands via broadcast.
             if (cmd != BridgeContract.CMD_CONNECT_AND_SYNC) {
                 sendBroadcast(Intent(ACTION_INTERNAL_FOREGROUND_CMD).apply {
@@ -125,28 +125,19 @@ class JblBridgeService : Service() {
             if (sysLevel != null && snap.leftBattery == null) {
                 snap = snap.copy(leftBattery = sysLevel, rightBattery = sysLevel)
             }
-            ColorOsBridge.pushRawSnapshot(this, snap, controlReady = false, triggerPopup = triggerPopup)
+            TakeoverBridge.pushRawSnapshot(this, snap, controlReady = false, triggerPopup = triggerPopup)
             return
         }
 
         when (cmd) {
             BridgeContract.CMD_SET_NOISE_MODE -> {
                 val target = runCatching { NoiseMode.valueOf(noiseStr ?: "OFF") }.getOrDefault(NoiseMode.OFF)
-                val cmdName = when (target) {
-                    NoiseMode.OFF -> "noise_all_off"
-                    NoiseMode.ANC -> "anc_on"
-                    NoiseMode.AMBIENT_AWARE -> "ambient_aware_on"
-                    NoiseMode.TALKTHRU -> "talkthru_on"
-                }
-                val ancFilter: (com.jblt230.ctrl.ble.Frame) -> Boolean = { f ->
-                    f.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x12
-                }
-                val res = queue.writeAndVerify(cmdName, readFilter = ancFilter) {
-                    FrameCodec.parseNoiseMode(it) == target
-                }
-                if (res is WriteResult.Verified) {
-                    snap = snap.copy(noiseMode = target.name)
-                }
+                if (writeNoiseMode(target)) snap = snap.copy(noiseMode = target.name)
+            }
+            BridgeContract.CMD_CYCLE_NOISE_MODE -> {
+                val current = runCatching { NoiseMode.valueOf(snap.noiseMode) }.getOrDefault(NoiseMode.OFF)
+                val target = BridgeContract.nextQuickNoiseMode(current)
+                if (writeNoiseMode(target)) snap = snap.copy(noiseMode = target.name)
             }
             BridgeContract.CMD_SET_EQ_PRESET -> {
                 val targetPreset = eqPreset ?: "off"
@@ -204,7 +195,7 @@ class JblBridgeService : Service() {
             fwVersion = info?.firmwareVersion?.ifBlank { snap.fwVersion } ?: snap.fwVersion
         )
 
-        ColorOsBridge.pushRawSnapshot(
+        TakeoverBridge.pushRawSnapshot(
             context = this,
             snap = snap,
             deviceName = classic?.name ?: "JBL TUNE230NC TWS",
@@ -217,6 +208,22 @@ class JblBridgeService : Service() {
             BridgeContract.noiseModeLabel(noise ?: NoiseMode.OFF)
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIFICATION_ID, buildNotification(summary))
+    }
+
+    private suspend fun writeNoiseMode(target: NoiseMode): Boolean {
+        val cmdName = when (target) {
+            NoiseMode.OFF -> "noise_all_off"
+            NoiseMode.ANC -> "anc_on"
+            NoiseMode.AMBIENT_AWARE -> "ambient_aware_on"
+            NoiseMode.TALKTHRU -> "talkthru_on"
+        }
+        val ancFilter: (com.jblt230.ctrl.ble.Frame) -> Boolean = { f ->
+            f.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x12
+        }
+        val res = queue.writeAndVerify(cmdName, readFilter = ancFilter) {
+            FrameCodec.parseNoiseMode(it) == target
+        }
+        return res is WriteResult.Verified
     }
 
     private suspend fun ensureConnected(): Boolean {

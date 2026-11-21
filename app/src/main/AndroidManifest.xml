@@ -48,5 +48,17 @@
                 <action android:name="android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".bridge.JblBatteryWidgetProvider"
+            android:exported="true"
+            android:label="JBL T230 电量与降噪">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/jbl_battery_widget_info" />
+        </receiver>
     </application>
 </manifest>

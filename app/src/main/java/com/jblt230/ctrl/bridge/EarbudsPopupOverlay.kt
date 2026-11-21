@@ -2,6 +2,7 @@ package com.jblt230.ctrl.bridge
 
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -12,6 +13,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -22,8 +24,8 @@ import com.jblt230.ctrl.MainActivity
 import com.jblt230.ctrl.ble.NoiseMode
 
 /**
- * Root-free bottom popup overlay (uses Android's `SYSTEM_ALERT_WINDOW`) that appears
- * when JBL Tune 230NC earbuds connect, showing live L/R/Case battery and quick ANC controls.
+ * Root-free bottom popup overlay (`SYSTEM_ALERT_WINDOW`) with adaptive light/dark theme,
+ * proper DPI scaling, swipe-down dismissal, and live L/R/Case + ANC controls.
  */
 object EarbudsPopupOverlay {
 
@@ -35,7 +37,19 @@ object EarbudsPopupOverlay {
     private var currentSnapshot: CachedDeviceSnapshot? = null
     private var currentControlReady = false
 
-    private val dismissRunnable = Runnable { dismiss() }
+    private val dismissRunnable = Runnable { animateAndDismiss() }
+
+    private data class Palette(
+        val cardBg: Int,
+        val cardStroke: Int,
+        val tileBg: Int,
+        val handleBg: Int,
+        val titleText: Int,
+        val mutedText: Int,
+        val accentText: Int,
+        val activeChipBg: Int,
+        val activeChipText: Int
+    )
 
     fun isShowing(): Boolean = rootContainer != null
 
@@ -63,6 +77,17 @@ object EarbudsPopupOverlay {
         rootContainer = null
     }
 
+    private fun animateAndDismiss() {
+        val view = rootContainer ?: return
+        mainHandler.removeCallbacks(dismissRunnable)
+        view.animate()
+            .alpha(0f)
+            .translationY(dp(view.context, 36).toFloat())
+            .setDuration(180L)
+            .withEndAction { dismiss() }
+            .start()
+    }
+
     private fun showOnMain(
         ctx: Context,
         snap: CachedDeviceSnapshot,
@@ -77,8 +102,10 @@ object EarbudsPopupOverlay {
         val windowManager = wm ?: (ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager).also {
             wm = it
         }
+        val palette = resolvePalette(ctx)
+        val card = buildPopupCard(ctx, palette, snap, deviceName, controlReady, autoDismiss)
+        attachSwipeToDismiss(ctx, card, autoDismiss)
 
-        val card = buildPopupCard(ctx, snap, deviceName, controlReady, autoDismiss)
         val existing = rootContainer
         if (existing != null) {
             existing.removeAllViews()
@@ -86,7 +113,7 @@ object EarbudsPopupOverlay {
             runCatching { windowManager.updateViewLayout(existing, existing.layoutParams) }
         } else {
             val container = FrameLayout(ctx).apply {
-                setPadding(dp(ctx, 14), dp(ctx, 8), dp(ctx, 14), dp(ctx, 20))
+                setPadding(dp(ctx, 14), dp(ctx, 8), dp(ctx, 14), dp(ctx, 24))
                 addView(card)
             }
             val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -105,7 +132,7 @@ object EarbudsPopupOverlay {
                 gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             }
             container.alpha = 0f
-            container.translationY = dp(ctx, 28).toFloat()
+            container.translationY = dp(ctx, 32).toFloat()
             runCatching {
                 windowManager.addView(container, lp)
                 rootContainer = container
@@ -118,8 +145,48 @@ object EarbudsPopupOverlay {
         }
     }
 
+    private fun attachSwipeToDismiss(ctx: Context, card: View, autoDismiss: Boolean) {
+        val thresholdPx = dp(ctx, 44).toFloat()
+        var downRawY = 0f
+        var dragging = false
+        card.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawY = event.rawY
+                    dragging = false
+                    mainHandler.removeCallbacks(dismissRunnable)
+                    false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = (event.rawY - downRawY).coerceAtLeast(0f)
+                    if (dy > dp(ctx, 8)) {
+                        dragging = true
+                        v.translationY = dy
+                        v.alpha = (1f - dy / dp(ctx, 160)).coerceIn(0.35f, 1f)
+                        true
+                    } else {
+                        false
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val dy = (event.rawY - downRawY).coerceAtLeast(0f)
+                    if (dragging && dy > thresholdPx) {
+                        animateAndDismiss()
+                        true
+                    } else {
+                        v.animate().translationY(0f).alpha(1f).setDuration(160L).start()
+                        if (autoDismiss) mainHandler.postDelayed(dismissRunnable, AUTO_DISMISS_MS)
+                        dragging
+                    }
+                }
+                else -> false
+            }
+        }
+    }
+
     private fun buildPopupCard(
         ctx: Context,
+        palette: Palette,
         snap: CachedDeviceSnapshot,
         deviceName: String,
         controlReady: Boolean,
@@ -128,15 +195,25 @@ object EarbudsPopupOverlay {
         val card = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             background = roundedBg(
-                fillColor = Color.parseColor("#FA151C26"),
+                ctx = ctx,
+                fillColor = palette.cardBg,
                 cornerDp = 24f,
-                strokeColor = Color.parseColor("#33FFFFFF"),
+                strokeColor = palette.cardStroke,
                 strokeDp = 1f
             )
-            setPadding(dp(ctx, 18), dp(ctx, 16), dp(ctx, 18), dp(ctx, 16))
+            setPadding(dp(ctx, 18), dp(ctx, 10), dp(ctx, 18), dp(ctx, 16))
         }
 
-        // Header row: title + firmware/status badge + close button
+        // Drag handle pill for intuitive swipe-down dismissal
+        card.addView(View(ctx).apply {
+            background = roundedBg(ctx, palette.handleBg, cornerDp = 3f)
+            layoutParams = LinearLayout.LayoutParams(dp(ctx, 36), dp(ctx, 4)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = dp(ctx, 10)
+            }
+        })
+
+        // Header row: title + status + close button
         val header = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -147,23 +224,23 @@ object EarbudsPopupOverlay {
         }
         titleCol.addView(TextView(ctx).apply {
             text = deviceName.ifBlank { "JBL TUNE230NC TWS" }
-            setTextColor(Color.WHITE)
+            setTextColor(palette.titleText)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             typeface = Typeface.DEFAULT_BOLD
         })
         titleCol.addView(TextView(ctx).apply {
             val fw = snap.fwVersion.takeIf { it.isNotBlank() }?.let { " · FW $it" } ?: ""
             text = if (controlReady) "GATT 已就绪$fw" else "正在同步实时电量…$fw"
-            setTextColor(Color.parseColor(if (controlReady) "#7FE0C4" else "#9AB0C4"))
+            setTextColor(if (controlReady) palette.accentText else palette.mutedText)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
         })
         header.addView(titleCol)
         header.addView(TextView(ctx).apply {
             text = "✕"
-            setTextColor(Color.parseColor("#B0C0D0"))
+            setTextColor(palette.mutedText)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             setPadding(dp(ctx, 10), dp(ctx, 4), dp(ctx, 6), dp(ctx, 4))
-            setOnClickListener { dismiss() }
+            setOnClickListener { animateAndDismiss() }
         })
         card.addView(header)
 
@@ -172,14 +249,14 @@ object EarbudsPopupOverlay {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(ctx, 14), 0, dp(ctx, 14))
         }
-        batRow.addView(buildBatteryTile(ctx, "左耳 L", snap.leftBattery, snap.leftCharging))
+        batRow.addView(buildBatteryTile(ctx, palette, "左耳 L", snap.leftBattery, snap.leftCharging))
         batRow.addView(spaceX(ctx, 8))
-        batRow.addView(buildBatteryTile(ctx, "右耳 R", snap.rightBattery, snap.rightCharging))
+        batRow.addView(buildBatteryTile(ctx, palette, "右耳 R", snap.rightBattery, snap.rightCharging))
         batRow.addView(spaceX(ctx, 8))
-        batRow.addView(buildBatteryTile(ctx, "充电盒", snap.caseBattery, snap.caseCharging))
+        batRow.addView(buildBatteryTile(ctx, palette, "充电盒", snap.caseBattery, snap.caseCharging))
         card.addView(batRow)
 
-        // Quick noise control row: ANC / Ambient Aware / Off
+        // Quick noise control row
         val activeNoise = runCatching { NoiseMode.valueOf(snap.noiseMode) }.getOrDefault(NoiseMode.OFF)
         val noiseRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
         val modes = listOf(
@@ -189,7 +266,7 @@ object EarbudsPopupOverlay {
         )
         modes.forEachIndexed { idx, (mode, label) ->
             if (idx > 0) noiseRow.addView(spaceX(ctx, 8))
-            noiseRow.addView(buildActionChip(ctx, label, activeNoise == mode) {
+            noiseRow.addView(buildActionChip(ctx, palette, label, activeNoise == mode) {
                 if (autoDismiss) {
                     mainHandler.removeCallbacks(dismissRunnable)
                     mainHandler.postDelayed(dismissRunnable, AUTO_DISMISS_MS)
@@ -201,18 +278,18 @@ object EarbudsPopupOverlay {
         }
         card.addView(noiseRow)
 
-        // Footer actions: Find Buds + Open Console
+        // Footer actions
         val footer = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(ctx, 10), 0, 0)
         }
-        footer.addView(buildActionChip(ctx, "响铃找耳机", selected = false) {
+        footer.addView(buildActionChip(ctx, palette, "响铃找耳机", selected = false) {
             mainHandler.removeCallbacks(dismissRunnable)
             sendServiceCommand(ctx, BridgeContract.CMD_FIND_BUDS, findEnable = true)
         })
         footer.addView(spaceX(ctx, 8))
-        footer.addView(buildActionChip(ctx, "打开主控台", selected = true) {
-            dismiss()
+        footer.addView(buildActionChip(ctx, palette, "打开主控台", selected = true) {
+            animateAndDismiss()
             val launch = Intent(ctx, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             }
@@ -225,6 +302,7 @@ object EarbudsPopupOverlay {
 
     private fun buildBatteryTile(
         ctx: Context,
+        palette: Palette,
         label: String,
         level: Int?,
         charging: Boolean
@@ -233,24 +311,21 @@ object EarbudsPopupOverlay {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            background = roundedBg(
-                fillColor = Color.parseColor("#1AFFFFFF"),
-                cornerDp = 16f
-            )
+            background = roundedBg(ctx, fillColor = palette.tileBg, cornerDp = 16f)
             setPadding(dp(ctx, 10), dp(ctx, 10), dp(ctx, 10), dp(ctx, 10))
         }
         tile.addView(TextView(ctx).apply {
             text = label
-            setTextColor(Color.parseColor("#9AB0C4"))
+            setTextColor(palette.mutedText)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
         })
         tile.addView(TextView(ctx).apply {
             text = BridgeContract.formatBatteryText(level, charging)
             setTextColor(
                 when {
-                    level != null && level <= 20 -> Color.parseColor("#FF7A7A")
-                    charging -> Color.parseColor("#7FE0C4")
-                    else -> Color.WHITE
+                    level != null && level <= 20 -> Color.parseColor("#E55353")
+                    charging -> palette.accentText
+                    else -> palette.titleText
                 }
             )
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
@@ -267,6 +342,7 @@ object EarbudsPopupOverlay {
 
     private fun buildActionChip(
         ctx: Context,
+        palette: Palette,
         label: String,
         selected: Boolean,
         onClick: () -> Unit
@@ -275,10 +351,11 @@ object EarbudsPopupOverlay {
         gravity = Gravity.CENTER
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         background = roundedBg(
-            fillColor = Color.parseColor(if (selected) "#1C7C7A" else "#1FFFFFFF"),
+            ctx = ctx,
+            fillColor = if (selected) palette.activeChipBg else palette.tileBg,
             cornerDp = 12f
         )
-        setTextColor(Color.WHITE)
+        setTextColor(if (selected) palette.activeChipText else palette.titleText)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         setPadding(dp(ctx, 8), dp(ctx, 9), dp(ctx, 8), dp(ctx, 9))
@@ -305,17 +382,51 @@ object EarbudsPopupOverlay {
         }
     }
 
+    private fun resolvePalette(ctx: Context): Palette {
+        val night = (ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        return if (night) {
+            Palette(
+                cardBg = Color.parseColor("#FA151C26"),
+                cardStroke = Color.parseColor("#33FFFFFF"),
+                tileBg = Color.parseColor("#1AFFFFFF"),
+                handleBg = Color.parseColor("#44FFFFFF"),
+                titleText = Color.WHITE,
+                mutedText = Color.parseColor("#9AB0C4"),
+                accentText = Color.parseColor("#7FE0C4"),
+                activeChipBg = Color.parseColor("#1C7C7A"),
+                activeChipText = Color.WHITE
+            )
+        } else {
+            Palette(
+                cardBg = Color.parseColor("#FCF8FAFC"),
+                cardStroke = Color.parseColor("#22151C26"),
+                tileBg = Color.parseColor("#12151C26"),
+                handleBg = Color.parseColor("#33151C26"),
+                titleText = Color.parseColor("#101A28"),
+                mutedText = Color.parseColor("#556677"),
+                accentText = Color.parseColor("#0F6B52"),
+                activeChipBg = Color.parseColor("#0F6B52"),
+                activeChipText = Color.WHITE
+            )
+        }
+    }
+
     private fun roundedBg(
+        ctx: Context,
         fillColor: Int,
         cornerDp: Float,
         strokeColor: Int? = null,
         strokeDp: Float = 0f
-    ): GradientDrawable = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = cornerDp * 2.5f
-        setColor(fillColor)
-        if (strokeColor != null && strokeDp > 0f) {
-            setStroke((strokeDp * 2.5f).toInt().coerceAtLeast(1), strokeColor)
+    ): GradientDrawable {
+        val density = ctx.resources.displayMetrics.density
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = cornerDp * density
+            setColor(fillColor)
+            if (strokeColor != null && strokeDp > 0f) {
+                setStroke((strokeDp * density).toInt().coerceAtLeast(1), strokeColor)
+            }
         }
     }
 

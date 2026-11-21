@@ -792,7 +792,7 @@ private fun ExtrasScreen(state: UiState, vm: AppViewModel) {
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(
-                    onClick = { vm.syncToColorOs(triggerPopup = true) },
+                    onClick = { vm.triggerTakeoverSync(triggerPopup = true) },
                     modifier = Modifier.weight(1f)
                 ) { Text("预览开盖弹窗", fontSize = 11.sp) }
                 OutlinedButton(
@@ -826,14 +826,14 @@ private fun BridgeSwitchRow(
 @Composable
 private fun SettingsScreen(state: UiState, vm: AppViewModel) {
     val logs by vm.logs.collectAsState()
-    val colorOsCfg by vm.colorOsConfig.collectAsState()
+    val takeoverCfg by vm.takeoverConfig.collectAsState()
+    val overlayOk by vm.overlayGranted.collectAsState()
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).weight(1f)) {
             Spacer(Modifier.height(8.dp))
-            val overlayOk = vm.canDrawOverlays()
-            SectionCard("免 Root 接管与开盖弹窗（替代官方 JBL）") {
+            SectionCard("免 Root 接管、开盖弹窗与桌面小组件") {
                 Text(
-                    "纯 Android 标准权限实现：蓝牙连接或开盖重连时自动在底部弹出左耳 / 右耳 / 充电盒电量和降噪切换卡片（无需 Root / LSPosed，彻底接管原官方软件）。",
+                    "纯 Android 标准权限实现：蓝牙连接自动底部弹窗（支持深浅色自适应与下拉关闭）；同时提供桌面小组件「JBL T230 电量与降噪」，即使系统限制后台也可在桌面一键刷新三端电量与切换降噪。",
                     fontSize = 11.sp,
                     color = Muted
                 )
@@ -852,28 +852,28 @@ private fun SettingsScreen(state: UiState, vm: AppViewModel) {
                         Text(if (overlayOk) "查看" else "去授权", fontSize = 11.sp)
                     }
                 }
-                BridgeSwitchRow("启用蓝牙连接 / 开盖后台接管", colorOsCfg.enabled) { checked ->
-                    vm.updateColorOsConfig { it.copy(enabled = checked) }
+                BridgeSwitchRow("启用蓝牙连接 / 开盖后台接管", takeoverCfg.enabled) { checked ->
+                    vm.updateTakeoverConfig { it.copy(enabled = checked) }
                 }
-                BridgeSwitchRow("连接后自动弹出电量与降噪卡片", colorOsCfg.autoPopupOnConnect, enabled = colorOsCfg.enabled) { checked ->
-                    vm.updateColorOsConfig { it.copy(autoPopupOnConnect = checked) }
+                BridgeSwitchRow("连接后自动弹出电量与降噪卡片", takeoverCfg.autoPopupOnConnect, enabled = takeoverCfg.enabled) { checked ->
+                    vm.updateTakeoverConfig { it.copy(autoPopupOnConnect = checked) }
                 }
-                BridgeSwitchRow("无操作 6.5 秒后自动收起弹窗", colorOsCfg.autoDismissPopup, enabled = colorOsCfg.enabled) { checked ->
-                    vm.updateColorOsConfig { it.copy(autoDismissPopup = checked) }
+                BridgeSwitchRow("无操作 6.5 秒后自动收起弹窗", takeoverCfg.autoDismissPopup, enabled = takeoverCfg.enabled) { checked ->
+                    vm.updateTakeoverConfig { it.copy(autoDismissPopup = checked) }
                 }
-                BridgeSwitchRow("后台持续保持 GATT 链路（独占）", colorOsCfg.keepLinkAlive, enabled = colorOsCfg.enabled) { checked ->
-                    vm.updateColorOsConfig { it.copy(keepLinkAlive = checked) }
+                BridgeSwitchRow("切后台保持 GATT 控制连接", takeoverCfg.keepLinkAlive, enabled = takeoverCfg.enabled) { checked ->
+                    vm.updateTakeoverConfig { it.copy(keepLinkAlive = checked) }
                 }
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Button(
-                        onClick = { vm.syncToColorOs(triggerPopup = true) },
-                        enabled = colorOsCfg.enabled,
+                        onClick = { vm.triggerTakeoverSync(triggerPopup = true) },
+                        enabled = takeoverCfg.enabled,
                         modifier = Modifier.weight(1f)
                     ) { Text("测试开盖弹窗", fontSize = 11.sp) }
                     OutlinedButton(
-                        onClick = { vm.syncToColorOs(triggerPopup = false) },
-                        enabled = colorOsCfg.enabled,
+                        onClick = { vm.triggerTakeoverSync(triggerPopup = false) },
+                        enabled = takeoverCfg.enabled,
                         modifier = Modifier.weight(1f)
                     ) { Text("同步三端电量", fontSize = 11.sp) }
                 }

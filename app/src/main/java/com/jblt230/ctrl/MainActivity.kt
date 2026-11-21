@@ -43,9 +43,16 @@ class MainActivity : ComponentActivity() {
         if (!hasPermissions()) permissionLauncher.launch(permissions)
     }
 
-    /** The device permits one control link only: release it whenever we leave the foreground. */
+    override fun onResume() {
+        super.onResume()
+        vm.refreshOverlayPermission()
+    }
+
+    /** Release idle link on background unless user explicitly enables persistent takeover. */
     override fun onStop() {
-        vm.disconnect()
+        if (!vm.takeoverConfig.value.keepLinkAlive) {
+            vm.disconnect()
+        }
         super.onStop()
     }
 

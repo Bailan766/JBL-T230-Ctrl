@@ -4,7 +4,8 @@ import com.jblt230.ctrl.ble.NoiseMode
 
 /**
  * Shared intent actions, command identifiers, and helper formatters for standalone
- * background takeover (`JblBridgeReceiver` / `JblBridgeService` / `EarbudsPopupOverlay`).
+ * background takeover (`JblBridgeReceiver` / `JblBridgeService` / `EarbudsPopupOverlay` /
+ * `JblBatteryWidgetProvider`).
  *
  * Pure Kotlin helpers remain JVM unit-testable.
  */
@@ -18,6 +19,7 @@ object BridgeContract {
     const val EXTRA_CMD = "cmd"
     const val CMD_CONNECT_AND_SYNC = "CONNECT_AND_SYNC"
     const val CMD_SET_NOISE_MODE = "SET_NOISE_MODE"
+    const val CMD_CYCLE_NOISE_MODE = "CYCLE_NOISE_MODE"
     const val CMD_SET_EQ_PRESET = "SET_EQ_PRESET"
     const val CMD_FIND_BUDS = "FIND_BUDS"
 
@@ -45,5 +47,11 @@ object BridgeContract {
         NoiseMode.AMBIENT_AWARE -> "环境感知"
         NoiseMode.TALKTHRU -> "自由通话"
         NoiseMode.OFF -> "关闭"
+    }
+
+    fun nextQuickNoiseMode(current: NoiseMode): NoiseMode = when (current) {
+        NoiseMode.OFF -> NoiseMode.ANC
+        NoiseMode.ANC -> NoiseMode.AMBIENT_AWARE
+        NoiseMode.AMBIENT_AWARE, NoiseMode.TALKTHRU -> NoiseMode.OFF
     }
 }

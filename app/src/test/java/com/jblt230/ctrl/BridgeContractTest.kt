@@ -34,4 +34,12 @@ class BridgeContractTest {
         assertEquals("自由通话", BridgeContract.noiseModeLabel(NoiseMode.TALKTHRU))
         assertEquals("关闭", BridgeContract.noiseModeLabel(NoiseMode.OFF))
     }
+
+    @Test
+    fun quickNoiseModeCyclesCleanly() {
+        assertEquals(NoiseMode.ANC, BridgeContract.nextQuickNoiseMode(NoiseMode.OFF))
+        assertEquals(NoiseMode.AMBIENT_AWARE, BridgeContract.nextQuickNoiseMode(NoiseMode.ANC))
+        assertEquals(NoiseMode.OFF, BridgeContract.nextQuickNoiseMode(NoiseMode.AMBIENT_AWARE))
+        assertEquals(NoiseMode.OFF, BridgeContract.nextQuickNoiseMode(NoiseMode.TALKTHRU))
+    }
 }

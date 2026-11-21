@@ -2,7 +2,7 @@ package com.jblt230.ctrl.bridge
 
 import android.content.Context
 
-data class ColorOsSpoofConfig(
+data class TakeoverConfig(
     val enabled: Boolean = true,
     val autoPopupOnConnect: Boolean = true,
     val autoDismissPopup: Boolean = true,
@@ -22,18 +22,22 @@ data class CachedDeviceSnapshot(
     val fwVersion: String = ""
 )
 
-class ColorOsPrefs(context: Context) {
+/**
+ * Persists standalone takeover preferences and the most recent device snapshot.
+ * Keeps the original SharedPreferences file name for seamless upgrades from v1.1/v1.2.
+ */
+class TakeoverPrefs(context: Context) {
     private val prefs = context.applicationContext
         .getSharedPreferences("coloros_spoofer", Context.MODE_PRIVATE)
 
-    fun loadConfig(): ColorOsSpoofConfig = ColorOsSpoofConfig(
+    fun loadConfig(): TakeoverConfig = TakeoverConfig(
         enabled = prefs.getBoolean(KEY_ENABLED, true),
         autoPopupOnConnect = prefs.getBoolean(KEY_AUTO_POPUP, true),
         autoDismissPopup = prefs.getBoolean(KEY_AUTO_DISMISS, true),
         keepLinkAlive = prefs.getBoolean(KEY_KEEP_ALIVE, false)
     )
 
-    fun saveConfig(cfg: ColorOsSpoofConfig) {
+    fun saveConfig(cfg: TakeoverConfig) {
         prefs.edit()
             .putBoolean(KEY_ENABLED, cfg.enabled)
             .putBoolean(KEY_AUTO_POPUP, cfg.autoPopupOnConnect)

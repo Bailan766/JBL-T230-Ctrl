@@ -7,15 +7,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Coordinates foreground ViewModel vs background [JblBridgeService] ownership of
- * the single GATT control link, persists the latest snapshot, and updates the
- * root-free [EarbudsPopupOverlay].
+ * the single GATT control link, persists the latest snapshot, and keeps both the
+ * floating [EarbudsPopupOverlay] and home-screen [JblBatteryWidgetProvider] synchronized.
  */
-object ColorOsBridge {
+object TakeoverBridge {
 
     val foregroundLinkActive = AtomicBoolean(false)
 
     fun pushUiState(context: Context, state: UiState, triggerPopup: Boolean = false) {
-        val prefs = ColorOsPrefs(context)
+        val prefs = TakeoverPrefs(context)
         val cached = prefs.loadSnapshot()
         val mac = state.system.deviceAddress.ifBlank { cached.mac }
         if (mac.isBlank() && !triggerPopup) return
@@ -48,11 +48,12 @@ object ColorOsBridge {
         controlReady: Boolean,
         triggerPopup: Boolean
     ) {
-        val prefs = ColorOsPrefs(context)
+        val prefs = TakeoverPrefs(context)
         val cfg = prefs.loadConfig()
         if (snap.mac.isNotBlank()) {
             prefs.saveSnapshot(snap)
         }
+        JblBatteryWidgetProvider.updateAll(context)
         val shouldRenderPopup = cfg.enabled && (triggerPopup || EarbudsPopupOverlay.isShowing())
         if (shouldRenderPopup) {
             EarbudsPopupOverlay.showOrUpdate(
