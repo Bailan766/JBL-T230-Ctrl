@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="xposedscope">
+        <item>com.oplus.melody</item>
+        <item>com.heytap.accessory</item>
+        <item>com.oplus.wirelesssettings</item>
+        <item>jbl.stc.com</item>
+    </string-array>
+</resources>

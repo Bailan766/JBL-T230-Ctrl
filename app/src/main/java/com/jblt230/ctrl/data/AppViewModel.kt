@@ -2,8 +2,12 @@ package com.jblt230.ctrl.data
 
 import android.app.Application
 import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jblt230.ctrl.ble.BleScanner
@@ -19,6 +23,11 @@ import com.jblt230.ctrl.ble.LinkState
 import com.jblt230.ctrl.ble.NoiseMode
 import com.jblt230.ctrl.ble.SmartAudioMode
 import com.jblt230.ctrl.ble.WriteResult
+import com.jblt230.ctrl.bridge.BridgeContract
+import com.jblt230.ctrl.bridge.ColorOsBridge
+import com.jblt230.ctrl.bridge.ColorOsPrefs
+import com.jblt230.ctrl.bridge.ColorOsSpoofConfig
+import com.jblt230.ctrl.bridge.JblBridgeService
 import com.jblt230.ctrl.logging.ProtocolLog
 import com.jblt230.ctrl.protocol.CommandTable
 import com.jblt230.ctrl.protocol.Confidence
@@ -29,6 +38,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -54,6 +64,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val scanner = BleScanner(table.scan)
     private val system = SystemBaseline(app)
     private val eqStore = EqPresetStore(app)
+    private val colorOsPrefs = ColorOsPrefs(app)
+
+    private val _colorOsConfig = MutableStateFlow(colorOsPrefs.loadConfig())
+    val colorOsConfig: StateFlow<ColorOsSpoofConfig> = _colorOsConfig
+
+    private var bridgeRelayRegistered = false
+    private val bridgeRelayReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != JblBridgeService.ACTION_INTERNAL_FOREGROUND_CMD) return
+            when (intent.getStringExtra(BridgeContract.EXTRA_CMD)) {
+                BridgeContract.CMD_SET_NOISE_MODE -> {
+                    val mode = runCatching {
+                        NoiseMode.valueOf(intent.getStringExtra(BridgeContract.EXTRA_NOISE_MODE) ?: "OFF")
+                    }.getOrDefault(NoiseMode.OFF)
+                    setNoiseMode(mode)
+                }
+                BridgeContract.CMD_SET_EQ_PRESET -> {
+                    val presetId = intent.getStringExtra(BridgeContract.EXTRA_EQ_PRESET) ?: "off"
+                    val preset = eqPresets.firstOrNull { it.id == presetId }
+                    if (preset != null) setEqPreset(preset)
+                }
+                BridgeContract.CMD_FIND_BUDS -> {
+                    val enable = intent.getBooleanExtra(BridgeContract.EXTRA_FIND_LEFT, false)
+                    if (enable) {
+                        base.update { it.copy(findBudsPendingLeft = true, findBudsPendingRight = true) }
+                        confirmFindMyBuds()
+                    } else {
+                        stopFindMyBuds()
+                    }
+                }
+            }
+        }
+    }
 
     val logs: StateFlow<List<com.jblt230.ctrl.logging.LogEntry>> = log.entries
     val confidence: Map<String, Confidence> = table.commands.associate { it.name to it.confidence }
@@ -86,6 +129,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         system.start()
+        registerBridgeRelay()
+        viewModelScope.launch {
+            state.distinctUntilChanged { a, b ->
+                a.link::class == b.link::class &&
+                    a.battery == b.battery &&
+                    a.noiseMode == b.noiseMode &&
+                    a.eqPresetId == b.eqPresetId &&
+                    a.system.deviceAddress == b.system.deviceAddress &&
+                    a.system.systemBattery == b.system.systemBattery &&
+                    a.deviceInfo?.firmwareVersion == b.deviceInfo?.firmwareVersion
+            }.collect { s ->
+                ColorOsBridge.pushUiState(getApplication(), s, triggerPopup = false)
+            }
+        }
+    }
+
+    private fun registerBridgeRelay() {
+        if (bridgeRelayRegistered) return
+        val appCtx = getApplication<Application>()
+        val filter = IntentFilter(JblBridgeService.ACTION_INTERNAL_FOREGROUND_CMD)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                appCtx.registerReceiver(bridgeRelayReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                appCtx.registerReceiver(bridgeRelayReceiver, filter)
+            }
+            bridgeRelayRegistered = true
+        }
     }
 
     fun setPermissions(granted: Boolean) {
@@ -109,6 +181,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 system.start(classic.address)
+                ColorOsBridge.foregroundLinkActive.set(true)
 
                 var ready: LinkState.Ready? = null
                 base.update { it.copy(message = "扫描 JBL TUNE230NC TWS-LE 控制侧...") }
@@ -120,6 +193,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     ready = connectAndWait(classic)
                 }
                 if (ready == null) {
+                    ColorOsBridge.foregroundLinkActive.set(false)
                     base.update {
                         it.copy(message = "未能建立控制链路。系统层状态仍可用；固件级功能保持未验证。")
                     }
@@ -128,6 +202,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 base.update { it.copy(message = "控制链路已建立，正在执行官方握手与全量状态回读...") }
                 refreshAll()
             } catch (e: Throwable) {
+                ColorOsBridge.foregroundLinkActive.set(false)
                 base.update {
                     it.copy(
                         link = LinkState.Failed("连接异常: ${e.message ?: e.javaClass.simpleName}"),
@@ -148,6 +223,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun disconnect() {
         findBudsAutoStopJob?.cancel()
+        ColorOsBridge.foregroundLinkActive.set(false)
         transport.release()
         base.update {
             it.copy(message = "已释放控制链路，官方 JBL app 现在可以连接（音频不受影响）。")
@@ -1165,6 +1241,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { context.startActivity(intent) }
     }
 
+    fun updateColorOsConfig(transform: (ColorOsSpoofConfig) -> ColorOsSpoofConfig) {
+        val next = transform(_colorOsConfig.value)
+        _colorOsConfig.value = next
+        colorOsPrefs.saveConfig(next)
+        ColorOsBridge.pushUiState(getApplication(), state.value, triggerPopup = false)
+    }
+
+    fun syncToColorOs(triggerPopup: Boolean = false) {
+        val current = state.value
+        var mac = current.system.deviceAddress
+        if (mac.isBlank()) {
+            mac = runCatching {
+                scanner.findClassicDevice(BluetoothAdapter.getDefaultAdapter(), null)?.address
+            }.getOrNull().orEmpty()
+            if (mac.isNotBlank()) system.start(mac)
+        }
+        val effective = if (mac.isNotBlank() && current.system.deviceAddress.isBlank()) {
+            current.copy(system = current.system.copy(deviceAddress = mac, deviceName = "JBL TUNE230NC TWS"))
+        } else {
+            current
+        }
+        ColorOsBridge.pushUiState(getApplication(), effective, triggerPopup = triggerPopup)
+        base.update {
+            it.copy(
+                message = if (triggerPopup) {
+                    "已向 ColorOS 欢律发送开盖弹窗与实时状态同步（需在 LSPosed 中启用本模块）。"
+                } else {
+                    "已同步当前耳机状态到 ColorOS 欢律。"
+                }
+            )
+        }
+    }
+
     fun clearLog() = log.clear()
 
     private fun List<FeatureUi>.withStatus(
@@ -1209,6 +1318,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         findBudsAutoStopJob?.cancel()
+        ColorOsBridge.foregroundLinkActive.set(false)
+        if (bridgeRelayRegistered) {
+            runCatching { getApplication<Application>().unregisterReceiver(bridgeRelayReceiver) }
+            bridgeRelayRegistered = false
+        }
         transport.release()
         system.stop()
         super.onCleared()

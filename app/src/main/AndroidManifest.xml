@@ -11,9 +11,14 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <queries>
         <package android:name="jbl.stc.com" />
+        <package android:name="com.oplus.melody" />
+        <package android:name="com.heytap.accessory" />
+        <package android:name="com.oplus.wirelesssettings" />
     </queries>
 
     <application
@@ -22,6 +27,19 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.JblT230Ctrl">
+
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="ColorOS LSPosed 桥接：将 JBL Tune 230NC TWS 伪装为 OPPO Enco 耳机，开启原生开盖弹窗、流体云、三电量显示与降噪/EQ 联动" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+        <meta-data
+            android:name="xposedscope"
+            android:resource="@array/xposedscope" />
 
         <activity
             android:name=".MainActivity"
@@ -33,5 +51,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".bridge.JblBridgeService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <receiver
+            android:name=".bridge.JblBridgeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.jblt230.ctrl.ACTION_REMOTE_COMMAND" />
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+                <action android:name="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

@@ -36,7 +36,10 @@ CLASS_DIRS = [
     ROOT / "app" / "build" / "tmp" / "kotlin-classes" / "debugUnitTest",
 ]
 
-TEST_CLASSES = ["com.jblt230.ctrl.FrameCodecTest"]
+TEST_CLASSES = [
+    "com.jblt230.ctrl.FrameCodecTest",
+    "com.jblt230.ctrl.BridgeContractTest",
+]
 
 
 def find_jar(group: str, artifact: str, version: str) -> Path:

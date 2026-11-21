@@ -58,6 +58,7 @@ import com.jblt230.ctrl.ble.GestureFunctionGroup
 import com.jblt230.ctrl.ble.LinkState
 import com.jblt230.ctrl.ble.NoiseMode
 import com.jblt230.ctrl.ble.SmartAudioMode
+import com.jblt230.ctrl.bridge.BridgeContract
 import com.jblt230.ctrl.data.AppViewModel
 import com.jblt230.ctrl.data.FeatureStatus
 import com.jblt230.ctrl.data.FeatureUi
@@ -795,11 +796,72 @@ private fun ExtrasScreen(state: UiState, vm: AppViewModel) {
 // ---------------------------------------------------------------- 设置
 
 @Composable
+private fun BridgeSwitchRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, fontSize = 12.sp, color = Ink, modifier = Modifier.weight(1f))
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
 private fun SettingsScreen(state: UiState, vm: AppViewModel) {
     val logs by vm.logs.collectAsState()
+    val colorOsCfg by vm.colorOsConfig.collectAsState()
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).weight(1f)) {
             Spacer(Modifier.height(8.dp))
+            SectionCard("ColorOS / LSPosed 原生弹窗与欢律伪装") {
+                Text(
+                    "在 LSPosed 中启用本模块并勾选作用域：欢律(com.oplus.melody)、无线耳机(com.oplus.wirelesssettings)、设备连接服务(com.heytap.accessory)，重启上述应用后生效。",
+                    fontSize = 11.sp,
+                    color = Muted
+                )
+                Spacer(Modifier.height(6.dp))
+                BridgeSwitchRow("启用欢律 / OPPO 耳机伪装", colorOsCfg.enabled) { checked ->
+                    vm.updateColorOsConfig { it.copy(enabled = checked) }
+                }
+                BridgeSwitchRow("蓝牙重连 / 开盖自动弹窗", colorOsCfg.autoPopupOnConnect, enabled = colorOsCfg.enabled) { checked ->
+                    vm.updateColorOsConfig { it.copy(autoPopupOnConnect = checked) }
+                }
+                BridgeSwitchRow("后台持续保持 GATT 链路（独占）", colorOsCfg.keepLinkAlive, enabled = colorOsCfg.enabled) { checked ->
+                    vm.updateColorOsConfig { it.copy(keepLinkAlive = checked) }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text("伪装目标型号：", fontSize = 11.sp, color = Muted)
+                Spacer(Modifier.height(4.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(BridgeContract.SPOOF_PRESETS) { preset ->
+                        PillButton(
+                            text = preset.melodyName,
+                            selected = colorOsCfg.spoofModelName == preset.melodyName,
+                            enabled = colorOsCfg.enabled
+                        ) {
+                            vm.updateColorOsConfig { it.copy(spoofModelName = preset.melodyName) }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = { vm.syncToColorOs(triggerPopup = true) },
+                        enabled = colorOsCfg.enabled,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("测试开盖弹窗", fontSize = 11.sp) }
+                    OutlinedButton(
+                        onClick = { vm.syncToColorOs(triggerPopup = false) },
+                        enabled = colorOsCfg.enabled,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("同步电量/ANC", fontSize = 11.sp) }
+                }
+            }
             SectionCard("协议与证据") {
                 InfoLine("命令表条目", "${vm.commandCount} 条")
                 InfoLine("危险命令黑名单", "${vm.blacklist.size} 项")
