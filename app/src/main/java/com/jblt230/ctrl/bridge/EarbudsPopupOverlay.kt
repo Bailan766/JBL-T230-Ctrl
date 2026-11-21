@@ -387,26 +387,26 @@ object EarbudsPopupOverlay {
             Configuration.UI_MODE_NIGHT_YES
         return if (night) {
             Palette(
-                cardBg = Color.parseColor("#FA151C26"),
-                cardStroke = Color.parseColor("#33FFFFFF"),
-                tileBg = Color.parseColor("#1AFFFFFF"),
+                cardBg = Color.parseColor("#FA121821"),
+                cardStroke = Color.parseColor("#2A3A4E"),
+                tileBg = Color.parseColor("#18FFFFFF"),
                 handleBg = Color.parseColor("#44FFFFFF"),
                 titleText = Color.WHITE,
-                mutedText = Color.parseColor("#9AB0C4"),
-                accentText = Color.parseColor("#7FE0C4"),
-                activeChipBg = Color.parseColor("#1C7C7A"),
+                mutedText = Color.parseColor("#8FA3B8"),
+                accentText = Color.parseColor("#2CE09B"),
+                activeChipBg = Color.parseColor("#FF5722"),
                 activeChipText = Color.WHITE
             )
         } else {
             Palette(
                 cardBg = Color.parseColor("#FCF8FAFC"),
                 cardStroke = Color.parseColor("#22151C26"),
-                tileBg = Color.parseColor("#12151C26"),
+                tileBg = Color.parseColor("#10151C26"),
                 handleBg = Color.parseColor("#33151C26"),
                 titleText = Color.parseColor("#101A28"),
                 mutedText = Color.parseColor("#556677"),
-                accentText = Color.parseColor("#0F6B52"),
-                activeChipBg = Color.parseColor("#0F6B52"),
+                accentText = Color.parseColor("#0F7B58"),
+                activeChipBg = Color.parseColor("#FF5722"),
                 activeChipText = Color.WHITE
             )
         }

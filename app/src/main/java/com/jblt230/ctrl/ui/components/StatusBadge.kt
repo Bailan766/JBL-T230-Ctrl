@@ -1,6 +1,7 @@
 package com.jblt230.ctrl.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
@@ -16,10 +17,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jblt230.ctrl.data.FeatureStatus
 
-private val Real = Color(0xFF0F7B4F)
-private val ReadOnly = Color(0xFF1D5FA8)
-private val Unverified = Color(0xFF9A6700)
-private val Degraded = Color(0xFF8A4B18)
+private val Real = Color(0xFF2CE09B)
+private val ReadOnly = Color(0xFF58A6FF)
+private val Unverified = Color(0xFFF5B041)
+private val Degraded = Color(0xFFFF7849)
 
 private fun colorOf(status: FeatureStatus) = when (status) {
     FeatureStatus.REAL -> Real
@@ -34,21 +35,18 @@ fun StatusBadge(status: FeatureStatus, modifier: Modifier = Modifier) {
     val c = colorOf(status)
     Row(
         modifier = modifier
-            .background(c.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .background(c.copy(alpha = 0.14f), RoundedCornerShape(999.dp))
+            .border(0.8.dp, c.copy(alpha = 0.35f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 9.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = "●",
-            color = c,
-            fontSize = 9.sp
-        )
+        Text(text = "●", color = c, fontSize = 8.sp)
         Spacer(Modifier.width(4.dp))
         Text(
             text = status.label,
             color = c,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold
         )
     }
 }
