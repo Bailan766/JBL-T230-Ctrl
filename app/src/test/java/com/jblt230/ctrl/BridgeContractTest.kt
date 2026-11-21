@@ -33,6 +33,37 @@ class BridgeContractTest {
     }
 
     @Test
+    fun fluidCloudChipAlwaysStaysCompactAndAccurate() {
+        val equalChip = BridgeContract.formatFluidCloudChip(90, 90, leftCharging = false, rightCharging = false)
+        assertEquals("90%", equalChip)
+        assertTrue(equalChip.length <= 7)
+
+        val equalCharging = BridgeContract.formatFluidCloudChip(85, 85, leftCharging = true, rightCharging = false)
+        assertEquals("⚡85%", equalCharging)
+        assertTrue(equalCharging.length <= 7)
+
+        val asym = BridgeContract.formatFluidCloudChip(90, 70)
+        assertEquals("L90 R70", asym)
+        assertTrue(asym.length <= 7)
+
+        // When one side is 100 and they differ, L100 R80 would be 8 chars; clamp gracefully to <= 7 chars.
+        val hundredDiff = BridgeContract.formatFluidCloudChip(100, 80)
+        assertEquals("80%", hundredDiff)
+        assertTrue(hundredDiff.length <= 7)
+
+        assertEquals("60%", BridgeContract.formatFluidCloudChip(60, null))
+        assertEquals("已连接", BridgeContract.formatFluidCloudChip(null, null))
+    }
+
+    @Test
+    fun averageBudBatteryHandlesSymmetricAsymmetricAndFallback() {
+        assertEquals(80, BridgeContract.averageBudBattery(90, 70, 50))
+        assertEquals(65, BridgeContract.averageBudBattery(null, 65, 50))
+        assertEquals(50, BridgeContract.averageBudBattery(null, null, 50))
+        assertEquals(0, BridgeContract.averageBudBattery(null, null, null))
+    }
+
+    @Test
     fun noiseModeLabelsAreHumanReadable() {
         assertEquals("主动降噪", BridgeContract.noiseModeLabel(NoiseMode.ANC))
         assertEquals("环境感知", BridgeContract.noiseModeLabel(NoiseMode.AMBIENT_AWARE))
@@ -51,15 +82,17 @@ class BridgeContractTest {
     @Test
     fun diagnosticFormatterIncludesCountsStepsAndFrames() {
         val env = DiagnosticReportFormatter.EnvironmentInfo(
-            generatedAt = "2026-11-22 01:40:00",
-            appVersion = "1.5.0 (8)",
+            generatedAt = "2026-11-22 04:15:00",
+            appVersion = "2.0.0 (10)",
             deviceModel = "realme RMX3888",
             androidRelease = "16",
             sdkInt = 36,
             permissionsGranted = true,
-            overlayGranted = true,
+            overlayGranted = false,
+            fluidCloudPromotedEnabled = true,
+            fluidCloudCharacteristicsOk = true,
             takeoverEnabled = true,
-            autoPopupOnConnect = true,
+            autoPopupOnConnect = false,
             keepLinkAlive = false,
             pairedName = "JBL TUNE230NC TWS",
             a2dpConnected = true,
@@ -73,14 +106,15 @@ class BridgeContractTest {
             DiagStep("eq", "多包 EQ", DiagStatus.FAIL, 1200, "分包超时")
         )
         val logs = listOf(
-            LogEntry("01:40:01.100", "→", "AA 25 00", "battery_read"),
-            LogEntry("01:40:01.145", "←", "AA 25 06 00 5A 00 5A 00 50", "")
+            LogEntry("04:15:01.100", "→", "AA 25 00", "battery_read"),
+            LogEntry("04:15:01.145", "←", "AA 25 06 00 5A 00 5A 00 50", "")
         )
         val text = DiagnosticReportFormatter.format(env, steps, logs)
+        assertTrue(text.contains("流体云/LiveUpdate: promoted=true, promotableChars=true"))
         assertTrue(text.contains("通过=1, 跳过=0, 警告=0, 失败=1"))
         assertTrue(text.contains("[PASS] (45ms) 三端电量 (0x25)"))
         assertTrue(text.contains("[FAIL] (1200ms) 多包 EQ: 分包超时"))
-        assertTrue(text.contains("01:40:01.100 → AA 25 00 // battery_read"))
+        assertTrue(text.contains("04:15:01.100 → AA 25 00 // battery_read"))
     }
 
     @Test
@@ -89,5 +123,25 @@ class BridgeContractTest {
         val vp = frame?.let { FrameCodec.parseVoicePrompt(it) }
         assertEquals(0, vp?.languageId)
         assertEquals("0.0.4", vp?.version)
+    }
+
+    @Test
+    fun colorOsSpoofNoiseEqAndProductIdHelpersRoundTrip() {
+        assertEquals(0, BridgeContract.noiseModeToColorOsIndex(NoiseMode.OFF))
+        assertEquals(1, BridgeContract.noiseModeToColorOsIndex(NoiseMode.AMBIENT_AWARE))
+        assertEquals(1, BridgeContract.noiseModeToColorOsIndex(NoiseMode.TALKTHRU))
+        assertEquals(2, BridgeContract.noiseModeToColorOsIndex(NoiseMode.ANC))
+
+        assertEquals(NoiseMode.OFF, BridgeContract.colorOsIndexToNoiseMode(0))
+        assertEquals(NoiseMode.AMBIENT_AWARE, BridgeContract.colorOsIndexToNoiseMode(1))
+        assertEquals(NoiseMode.ANC, BridgeContract.colorOsIndexToNoiseMode(2))
+
+        assertEquals(0x060414, BridgeContract.parseProductIdInt("060414"))
+        assertEquals("060814", BridgeContract.formatProductIdHex(0x060814))
+        assertEquals("OPPO Enco X2", BridgeContract.presetByName("unknown").melodyName)
+
+        for (p in listOf("off", "jazz", "vocal", "bass", "club", "studio", "extreme_bass", "custom")) {
+            assertEquals(p, BridgeContract.colorOsTypeToEqPreset(BridgeContract.eqPresetToColorOsType(p)))
+        }
     }
 }

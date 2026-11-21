@@ -6,9 +6,9 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.material3.Surface
 import androidx.core.content.ContextCompat
 import com.jblt230.ctrl.data.AppViewModel
 import com.jblt230.ctrl.ui.AppRoot
@@ -17,7 +17,7 @@ class MainActivity : ComponentActivity() {
 
     private val vm: AppViewModel by viewModels()
 
-    private val permissions: Array<String>
+    private val bluetoothPermissions: Array<String>
         get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_CONNECT,
@@ -27,25 +27,39 @@ class MainActivity : ComponentActivity() {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
 
+    private val launchPermissions: Array<String>
+        get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            bluetoothPermissions + Manifest.permission.POST_NOTIFICATIONS
+        } else {
+            bluetoothPermissions
+        }
+
     private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            vm.setPermissions(result.values.all { it })
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            vm.setPermissions(hasBluetoothPermissions())
+            vm.refreshPermissionStates()
+            vm.autoConnectIfReady()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        vm.setPermissions(hasPermissions())
+        vm.setPermissions(hasBluetoothPermissions())
+        vm.refreshPermissionStates()
         setContent {
-            Surface {
-                AppRoot(vm = vm, onRequestPermissions = { permissionLauncher.launch(permissions) })
-            }
+            AppRoot(vm = vm, onRequestPermissions = { permissionLauncher.launch(launchPermissions) })
         }
-        if (!hasPermissions()) permissionLauncher.launch(permissions)
+        val missingAny = launchPermissions.any {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missingAny) permissionLauncher.launch(launchPermissions)
     }
 
     override fun onResume() {
         super.onResume()
-        vm.refreshOverlayPermission()
+        vm.setPermissions(hasBluetoothPermissions())
+        vm.refreshPermissionStates()
+        vm.autoConnectIfReady()
     }
 
     /** Release idle link on background unless user explicitly enables persistent takeover. */
@@ -56,7 +70,7 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    private fun hasPermissions(): Boolean = permissions.all {
+    private fun hasBluetoothPermissions(): Boolean = bluetoothPermissions.all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 }

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.JblT230Ctrl" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">#FF0B0F14</item>
-        <item name="android:navigationBarColor">#FF10151C</item>
-        <item name="android:windowBackground">#FF0B0F14</item>
+    <style name="Theme.JblT230Ctrl" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#00000000</item>
+        <item name="android:navigationBarColor">#00000000</item>
+        <item name="android:windowBackground">#FFF5F6F8</item>
     </style>
 </resources>

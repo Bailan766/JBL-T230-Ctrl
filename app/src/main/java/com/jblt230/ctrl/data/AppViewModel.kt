@@ -26,6 +26,7 @@ import com.jblt230.ctrl.ble.SmartAudioMode
 import com.jblt230.ctrl.ble.WriteResult
 import com.jblt230.ctrl.bridge.BridgeContract
 import com.jblt230.ctrl.bridge.EarbudsPopupOverlay
+import com.jblt230.ctrl.bridge.FluidCloudNotifier
 import com.jblt230.ctrl.bridge.JblBridgeService
 import com.jblt230.ctrl.bridge.TakeoverBridge
 import com.jblt230.ctrl.bridge.TakeoverConfig
@@ -78,6 +79,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _overlayGranted = MutableStateFlow(EarbudsPopupOverlay.canDrawOverlays(app))
     val overlayGranted: StateFlow<Boolean> = _overlayGranted
 
+    private val _fluidCloudReady = MutableStateFlow(FluidCloudNotifier.canPostPromoted(app))
+    val fluidCloudReady: StateFlow<Boolean> = _fluidCloudReady
+
+    val melodyHookAlive: StateFlow<Boolean> = TakeoverBridge.melodyHookAlive
+
     private val _diagSteps = MutableStateFlow<List<DiagStep>>(emptyList())
     val diagSteps: StateFlow<List<DiagStep>> = _diagSteps
 
@@ -129,6 +135,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private var findBudsAutoStopJob: Job? = null
     private var refreshJob: Job? = null
+    private var connectJob: Job? = null
+    private var autoConnectedOnce = false
 
     private val base = MutableStateFlow(
         UiState(
@@ -147,7 +155,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
                 eqPresetId = saved.presetId,
                 eqGains = saved.gains,
-                message = "非官方互操作研究工具。所有固件级写入需经耳机回读一致后才标记为真实。"
+                message = ""
             )
         }
         system.start()
@@ -186,12 +194,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         base.update { it.copy(permissionsGranted = granted) }
     }
 
+    fun autoConnectIfReady() {
+        if (autoConnectedOnce || !state.value.permissionsGranted) return
+        val link = state.value.link
+        if (link is LinkState.Ready || link is LinkState.Connecting || link is LinkState.Discovering) return
+        val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
+        val classic = runCatching { scanner.findClassicDevice(adapter, null) }.getOrNull() ?: return
+        system.start(classic.address)
+        autoConnectedOnce = true
+        connect()
+    }
+
     fun connect() {
         if (!state.value.permissionsGranted) {
             base.update { it.copy(message = "缺少附近设备权限，无法连接耳机") }
             return
         }
-        viewModelScope.launch {
+        if (connectJob?.isActive == true) return
+        connectJob = viewModelScope.launch {
             try {
                 base.update { it.copy(message = "正在查找已配对的 JBL TUNE230...") }
                 val adapter = BluetoothAdapter.getDefaultAdapter()
@@ -1265,8 +1285,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         system.refresh()
     }
 
-    fun refreshOverlayPermission() {
-        _overlayGranted.value = EarbudsPopupOverlay.canDrawOverlays(getApplication())
+    fun refreshPermissionStates() {
+        val appCtx = getApplication<Application>()
+        _overlayGranted.value = EarbudsPopupOverlay.canDrawOverlays(appCtx)
+        _fluidCloudReady.value = FluidCloudNotifier.canPostPromoted(appCtx)
     }
 
     fun openOverlaySettings() {
@@ -1278,6 +1300,74 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { ctx.startActivity(intent) }
     }
 
+    fun openFluidCloudSettings() {
+        FluidCloudNotifier.openPromotionSettings(getApplication())
+    }
+
+    fun dismissFluidCloud() {
+        FluidCloudNotifier.dismiss(getApplication())
+        base.update { it.copy(message = "已收起流体云胶囊") }
+    }
+
+    fun testFluidCloud() {
+        val ctx = getApplication<Application>()
+        refreshPermissionStates()
+        val st = FluidCloudNotifier.statusSummary(ctx)
+        if (!st.notificationsEnabled || (st.sdkSupported && !st.canPostPromoted)) {
+            base.update { it.copy(message = "请先在系统通知管理中开启「实时通知 / 流体云」权限") }
+            openFluidCloudSettings()
+            return
+        }
+        val effective = ensureMacSnapshotState()
+        TakeoverBridge.pushUiState(ctx, effective, triggerPopup = true, forceOverlay = false)
+        triggerBackgroundSyncIfOffline(triggerPopup = true)
+        base.update { it.copy(message = "已推送 ColorOS 流体云胶囊与实时通知") }
+    }
+
+    fun triggerMelodyPopup() {
+        val ctx = getApplication<Application>()
+        val effective = ensureMacSnapshotState()
+        TakeoverBridge.pushUiState(
+            ctx,
+            effective,
+            triggerPopup = false,
+            triggerMelodyPopup = true,
+            triggerMelodyCapsule = false
+        )
+        triggerBackgroundSyncIfOffline(triggerPopup = false)
+        base.update {
+            it.copy(
+                message = if (melodyHookAlive.value) {
+                    "已向欢律推送原生 3D 开盖弹窗指令（型号：${_takeoverConfig.value.spoofModelName}）"
+                } else {
+                    "已发送欢律 3D 弹窗指令；若未弹窗请在 LSPosed 勾选欢律作用域并重启欢律"
+                }
+            )
+        }
+    }
+
+    fun triggerMelodyCapsule() {
+        val ctx = getApplication<Application>()
+        val effective = ensureMacSnapshotState()
+        TakeoverBridge.pushUiState(
+            ctx,
+            effective,
+            triggerPopup = false,
+            triggerMelodyPopup = false,
+            triggerMelodyCapsule = true
+        )
+        triggerBackgroundSyncIfOffline(triggerPopup = false)
+        base.update {
+            it.copy(
+                message = if (melodyHookAlive.value) {
+                    "已向欢律推送原生流体云胶囊（含左右耳/盒电量与 3D 动效）"
+                } else {
+                    "已发送欢律胶囊指令；若未激活请在 LSPosed 勾选 com.oplus.melody"
+                }
+            )
+        }
+    }
+
     fun updateTakeoverConfig(transform: (TakeoverConfig) -> TakeoverConfig) {
         val next = transform(_takeoverConfig.value)
         _takeoverConfig.value = next
@@ -1285,16 +1375,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         TakeoverBridge.pushUiState(getApplication(), state.value, triggerPopup = false)
     }
 
-    fun triggerTakeoverSync(triggerPopup: Boolean = false) {
+    fun triggerTakeoverSync(triggerPopup: Boolean = false, forceOverlay: Boolean = false) {
         val ctx = getApplication<Application>()
-        refreshOverlayPermission()
-        if (triggerPopup && !_overlayGranted.value) {
+        refreshPermissionStates()
+        if (forceOverlay && !_overlayGranted.value) {
             base.update {
-                it.copy(message = "请先开启“显示在其他应用上层 / 悬浮窗”权限，才能弹出免 Root 开盖卡片。")
+                it.copy(message = "请先开启“悬浮窗”权限，再预览传统弹窗卡片")
             }
             openOverlaySettings()
             return
         }
+        val effective = ensureMacSnapshotState()
+        TakeoverBridge.pushUiState(ctx, effective, triggerPopup = triggerPopup, forceOverlay = forceOverlay)
+        triggerBackgroundSyncIfOffline(triggerPopup = triggerPopup)
+        base.update {
+            it.copy(
+                message = when {
+                    forceOverlay -> "已预览传统底部悬浮卡片（支持下拉关闭）"
+                    triggerPopup -> "已推送至 ColorOS 流体云"
+                    else -> "正在同步最新电量与降噪状态"
+                }
+            )
+        }
+    }
+
+    private fun ensureMacSnapshotState(): UiState {
         val current = state.value
         var mac = current.system.deviceAddress
         if (mac.isBlank()) {
@@ -1303,13 +1408,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }.getOrNull().orEmpty()
             if (mac.isNotBlank()) system.start(mac)
         }
-        val effective = if (mac.isNotBlank() && current.system.deviceAddress.isBlank()) {
-            current.copy(system = current.system.copy(deviceAddress = mac, deviceName = "JBL TUNE230NC TWS"))
+        return if (mac.isNotBlank() && current.system.deviceAddress.isBlank()) {
+            current.copy(system = current.system.copy(deviceAddress = mac, deviceName = "JBL Tune 230NC"))
         } else {
             current
         }
-        TakeoverBridge.pushUiState(ctx, effective, triggerPopup = triggerPopup)
-        if (!current.controlReady && !TakeoverBridge.foregroundLinkActive.get()) {
+    }
+
+    private fun triggerBackgroundSyncIfOffline(triggerPopup: Boolean) {
+        val ctx = getApplication<Application>()
+        if (!state.value.controlReady && !TakeoverBridge.foregroundLinkActive.get()) {
             val svcIntent = Intent(ctx, JblBridgeService::class.java).apply {
                 putExtra(BridgeContract.EXTRA_CMD, BridgeContract.CMD_CONNECT_AND_SYNC)
                 putExtra(BridgeContract.EXTRA_TRIGGER_POPUP, triggerPopup)
@@ -1322,25 +1430,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        base.update {
-            it.copy(
-                message = if (triggerPopup) {
-                    "已弹出免 Root 实时电量与降噪快捷卡片（支持下拉关闭）。"
-                } else {
-                    "已触发后台同步耳机最新三端电量与状态。"
-                }
-            )
-        }
     }
 
     fun clearLog() = log.clear()
 
     fun buildDiagnosticReport(): String {
-        refreshOverlayPermission()
+        refreshPermissionStates()
+        val ctx = getApplication<Application>()
         val env = DiagnosticExporter.collectEnv(
             state = state.value,
             cfg = _takeoverConfig.value,
             overlayGranted = _overlayGranted.value,
+            fluidStatus = FluidCloudNotifier.statusSummary(ctx),
             discoveredServices = transport.discoveredServicesSummary
         )
         return DiagnosticReportFormatter.format(env, _diagSteps.value, logs.value)
@@ -1387,7 +1488,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 // 1. Permissions & paired device check
-                refreshOverlayPermission()
+                refreshPermissionStates()
                 val adapter = BluetoothAdapter.getDefaultAdapter()
                 val classic = runCatching { scanner.findClassicDevice(adapter, null) }.getOrNull()
                 if (!state.value.permissionsGranted) {

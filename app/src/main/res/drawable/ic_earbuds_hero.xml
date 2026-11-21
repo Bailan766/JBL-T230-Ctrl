@@ -1,0 +1,63 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="220dp"
+    android:height="112dp"
+    android:viewportWidth="220"
+    android:viewportHeight="112">
+    <!-- Soft ground shadow -->
+    <path
+        android:fillColor="#1A000000"
+        android:pathData="M34,102a76,6 0,1 0,152 0a76,6 0,1 0,-152 0z" />
+
+    <!-- Center Charging Case (matte pebble body) -->
+    <path
+        android:fillColor="#FF252932"
+        android:pathData="M78,24C78,15.2 85.2,8 94,8H126C134.8,8 142,15.2 142,24V82C142,91.9 133.9,100 124,100H96C86.1,100 78,91.9 78,82V24Z" />
+    <!-- Subtle top lid highlight -->
+    <path
+        android:fillColor="#FF323743"
+        android:pathData="M79,24C79,15.7 85.7,9 94,9H126C134.3,9 141,15.7 141,24V37H79V24Z" />
+    <!-- Lid hinge seam -->
+    <path
+        android:fillColor="#FF161920"
+        android:pathData="M78,37H142V38.8H78Z" />
+    <!-- Subtle center indicator LED -->
+    <path
+        android:fillColor="#FF22C58B"
+        android:pathData="M107,50h6a1.5,1.5 0,0 1,0 3h-6a1.5,1.5 0,0 1,0 -3z" />
+    <!-- Minimal case emblem strip -->
+    <path
+        android:fillColor="#26FFFFFF"
+        android:pathData="M98,66h24a2,2 0,0 1,0 4h-24a2,2 0,0 1,0 -4z" />
+
+    <!-- Left Tune 230NC Stem Earbud -->
+    <path
+        android:fillColor="#FF2B303B"
+        android:pathData="M38,34C38,24.6 45.6,17 55,17C61.2,17 66.2,22 66.2,28.2V34.5C66.2,39.5 63.3,43.8 59.1,45.8L57.5,87C57.4,91.4 53.8,95 49.4,95H48.6C44.2,95 40.6,91.4 40.6,87V49.2C38.9,44.7 38,39.5 38,34Z" />
+    <!-- Left ear tip -->
+    <path
+        android:fillColor="#FF1A1D24"
+        android:pathData="M30,30.5C30,24.7 34.4,20 39.8,20C43.2,20 45.5,24.5 45.5,30.5C45.5,36.5 43.2,41 39.8,41C34.4,41 30,36.3 30,30.5Z" />
+    <!-- Left stem metallic accent -->
+    <path
+        android:fillColor="#FF434A59"
+        android:pathData="M48,48h3.5a1.8,1.8 0,0 1,1.8 1.8v36.4a1.8,1.8 0,0 1,-1.8 1.8H48a1.8,1.8 0,0 1,-1.8,-1.8V49.8A1.8,1.8 0,0 1,48 48z" />
+    <path
+        android:fillColor="#FFF05423"
+        android:pathData="M48.2,31m-2.4,0a2.4,2.4 0,1 1,4.8 0a2.4,2.4 0,1 1,-4.8 0" />
+
+    <!-- Right Tune 230NC Stem Earbud -->
+    <path
+        android:fillColor="#FF2B303B"
+        android:pathData="M182,34C182,24.6 174.4,17 165,17C158.8,17 153.8,22 153.8,28.2V34.5C153.8,39.5 156.7,43.8 160.9,45.8L162.5,87C162.6,91.4 166.2,95 170.6,95H171.4C175.8,95 179.4,91.4 179.4,87V49.2C181.1,44.7 182,39.5 182,34Z" />
+    <!-- Right ear tip -->
+    <path
+        android:fillColor="#FF1A1D24"
+        android:pathData="M190,30.5C190,24.7 185.6,20 180.2,20C176.8,20 174.5,24.5 174.5,30.5C174.5,36.5 176.8,41 180.2,41C185.6,41 190,36.3 190,30.5Z" />
+    <!-- Right stem metallic accent -->
+    <path
+        android:fillColor="#FF434A59"
+        android:pathData="M168.5,48H172a1.8,1.8 0,0 1,1.8 1.8v36.4a1.8,1.8 0,0 1,-1.8 1.8h-3.5a1.8,1.8 0,0 1,-1.8,-1.8V49.8A1.8,1.8 0,0 1,168.5 48z" />
+    <path
+        android:fillColor="#FFF05423"
+        android:pathData="M171.8,31m-2.4,0a2.4,2.4 0,1 1,4.8 0a2.4,2.4 0,1 1,-4.8 0" />
+</vector>

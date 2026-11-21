@@ -9,6 +9,7 @@ pluginManagement {
         }
         maven { url = uri("https://repo1.maven.org/maven2/") }
         maven { url = uri("https://maven.aliyun.com/repository/public/") }
+        maven { url = uri("https://api.xposed.info/") }
         gradlePluginPortal()
     }
 }
@@ -21,6 +22,7 @@ dependencyResolutionManagement {
         // Use repo1.maven.org directly plus a mirror as fallback.
         maven { url = uri("https://repo1.maven.org/maven2/") }
         maven { url = uri("https://maven.aliyun.com/repository/public/") }
+        maven { url = uri("https://api.xposed.info/") }
     }
 }
 

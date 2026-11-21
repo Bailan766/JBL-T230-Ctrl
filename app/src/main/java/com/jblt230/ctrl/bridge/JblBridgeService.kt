@@ -195,12 +195,14 @@ class JblBridgeService : Service() {
             fwVersion = info?.firmwareVersion?.ifBlank { snap.fwVersion } ?: snap.fwVersion
         )
 
+        val cfg = prefs.loadConfig()
         TakeoverBridge.pushRawSnapshot(
             context = this,
             snap = snap,
-            deviceName = classic?.name ?: "JBL TUNE230NC TWS",
+            deviceName = classic?.name ?: "JBL Tune 230NC",
             controlReady = true,
-            triggerPopup = triggerPopup
+            triggerPopup = triggerPopup,
+            triggerMelodyCapsule = cfg.melodySpoofEnabled && cfg.melodyAutoCapsule
         )
         val summary = "L ${BridgeContract.formatBatteryText(snap.leftBattery)} · " +
             "R ${BridgeContract.formatBatteryText(snap.rightBattery)} · " +

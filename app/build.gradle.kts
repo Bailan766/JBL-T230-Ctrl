@@ -6,14 +6,14 @@ plugins {
 
 android {
     namespace = "com.jblt230.ctrl"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.jblt230.ctrl"
         minSdk = 31
-        targetSdk = 35
-        versionCode = 9
-        versionName = "1.5.1"
+        targetSdk = 36
+        versionCode = 10
+        versionName = "2.0.0"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
 
@@ -55,6 +55,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    compileOnly("de.robv.android.xposed:api:82")
 
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")

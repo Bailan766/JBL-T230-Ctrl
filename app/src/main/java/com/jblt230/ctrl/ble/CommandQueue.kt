@@ -53,7 +53,15 @@ class CommandQueue(
             return@withLock null
         }
         guard.assertResolvable(spec.frameHex, spec.requiresResolution)
-        sendAndAwait(spec.frameHex, spec.replyCmd ?: spec.cmd, match, timeoutOverrideMs = timeoutOverrideMs)
+        val replyCmd = spec.replyCmd ?: spec.cmd
+        var reply = sendAndAwait(spec.frameHex, replyCmd, match, timeoutOverrideMs = timeoutOverrideMs)
+        // Core reads (no fast optional probe timeout override) get one clean retry after 80ms
+        // in case a multi-part transfer or RF burst caused a transient miss.
+        if (reply == null && timeoutOverrideMs == null) {
+            delay(80L)
+            reply = sendAndAwait(spec.frameHex, replyCmd, match, timeoutOverrideMs = null)
+        }
+        reply
     }
 
     /** Static command from commands.json. */
@@ -250,7 +258,7 @@ class CommandQueue(
             log.add("!", FrameCodec.hex(payload), "0x43 载荷解析失败（len=${payload.size}）")
         }
         // Allow BES firmware to settle after AA 04 43 before the next queued GATT frame
-        delay(35L)
+        delay(160L)
         parsed
     }
 

@@ -16,6 +16,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -132,11 +133,16 @@ object EarbudsPopupOverlay {
                 gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             }
             container.alpha = 0f
-            container.translationY = dp(ctx, 32).toFloat()
+            container.translationY = dp(ctx, 48).toFloat()
             runCatching {
                 windowManager.addView(container, lp)
                 rootContainer = container
-                container.animate().alpha(1f).translationY(0f).setDuration(220L).start()
+                container.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setInterpolator(OvershootInterpolator(0.75f))
+                    .setDuration(320L)
+                    .start()
             }
         }
 
@@ -387,26 +393,26 @@ object EarbudsPopupOverlay {
             Configuration.UI_MODE_NIGHT_YES
         return if (night) {
             Palette(
-                cardBg = Color.parseColor("#FA121821"),
-                cardStroke = Color.parseColor("#2A3A4E"),
-                tileBg = Color.parseColor("#18FFFFFF"),
-                handleBg = Color.parseColor("#44FFFFFF"),
-                titleText = Color.WHITE,
-                mutedText = Color.parseColor("#8FA3B8"),
-                accentText = Color.parseColor("#2CE09B"),
-                activeChipBg = Color.parseColor("#FF5722"),
+                cardBg = Color.parseColor("#FA17191F"),
+                cardStroke = Color.parseColor("#2A2E39"),
+                tileBg = Color.parseColor("#16FFFFFF"),
+                handleBg = Color.parseColor("#3DFFFFFF"),
+                titleText = Color.parseColor("#F5F7FA"),
+                mutedText = Color.parseColor("#8A92A0"),
+                accentText = Color.parseColor("#10B981"),
+                activeChipBg = Color.parseColor("#3B82F6"),
                 activeChipText = Color.WHITE
             )
         } else {
             Palette(
-                cardBg = Color.parseColor("#FCF8FAFC"),
-                cardStroke = Color.parseColor("#22151C26"),
-                tileBg = Color.parseColor("#10151C26"),
-                handleBg = Color.parseColor("#33151C26"),
-                titleText = Color.parseColor("#101A28"),
-                mutedText = Color.parseColor("#556677"),
-                accentText = Color.parseColor("#0F7B58"),
-                activeChipBg = Color.parseColor("#FF5722"),
+                cardBg = Color.parseColor("#FCFFFFFF"),
+                cardStroke = Color.parseColor("#18000000"),
+                tileBg = Color.parseColor("#FFF2F4F7"),
+                handleBg = Color.parseColor("#28000000"),
+                titleText = Color.parseColor("#111318"),
+                mutedText = Color.parseColor("#7A828F"),
+                accentText = Color.parseColor("#0D9468"),
+                activeChipBg = Color.parseColor("#1470FF"),
                 activeChipText = Color.WHITE
             )
         }

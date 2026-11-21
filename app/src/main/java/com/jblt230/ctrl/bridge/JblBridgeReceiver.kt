@@ -11,9 +11,9 @@ import android.util.Log
 import com.jblt230.ctrl.system.BatteryReflection
 
 /**
- * Listens for JBL Tune 230NC Bluetooth connection broadcasts (`ACL_CONNECTED`,
- * `A2DP`, `HFP`) on unrooted devices: immediately displays cached/system battery in
- * [EarbudsPopupOverlay] and starts [JblBridgeService] to pull real L/R/Case telemetry.
+ * Listens for JBL Tune 230NC Bluetooth connection & disconnection broadcasts (`ACL_CONNECTED`,
+ * `ACL_DISCONNECTED`, `A2DP`, `HFP`), Fluid Cloud / Widget quick actions, and live
+ * confirmation ACKs from `com.oplus.melody` LSPosed hooks.
  */
 class JblBridgeReceiver : BroadcastReceiver() {
 
@@ -22,25 +22,52 @@ class JblBridgeReceiver : BroadcastReceiver() {
         if (context == null || intent == null) return
         val prefs = TakeoverPrefs(context)
         val cfg = prefs.loadConfig()
-        if (!cfg.enabled) return
 
         val action = intent.action ?: return
-        when (action) {
-            BridgeContract.ACTION_REMOTE_COMMAND -> {
-                val cmd = intent.getStringExtra(BridgeContract.EXTRA_CMD) ?: BridgeContract.CMD_CONNECT_AND_SYNC
-                val triggerPopup = intent.getBooleanExtra(BridgeContract.EXTRA_TRIGGER_POPUP, false)
-                val svcIntent = Intent(context, JblBridgeService::class.java).apply {
-                    putExtra(BridgeContract.EXTRA_CMD, cmd)
-                    putExtra(BridgeContract.EXTRA_TRIGGER_POPUP, triggerPopup)
-                    intent.getStringExtra(BridgeContract.EXTRA_NOISE_MODE)?.let {
-                        putExtra(BridgeContract.EXTRA_NOISE_MODE, it)
-                    }
-                    intent.getStringExtra(BridgeContract.EXTRA_EQ_PRESET)?.let {
-                        putExtra(BridgeContract.EXTRA_EQ_PRESET, it)
-                    }
-                    putExtra(BridgeContract.EXTRA_FIND_LEFT, intent.getBooleanExtra(BridgeContract.EXTRA_FIND_LEFT, false))
+        if (action == BridgeContract.ACTION_MELODY_HOOK_ACK) {
+            TakeoverBridge.markMelodyHookAlive()
+            return
+        }
+
+        if (action == BridgeContract.ACTION_REMOTE_COMMAND) {
+            val cmd = intent.getStringExtra(BridgeContract.EXTRA_CMD) ?: BridgeContract.CMD_CONNECT_AND_SYNC
+            if (cmd == BridgeContract.CMD_DISMISS_FLUID_CLOUD) {
+                FluidCloudNotifier.dismiss(context)
+                return
+            }
+            if (!cfg.enabled) return
+            val triggerPopup = intent.getBooleanExtra(BridgeContract.EXTRA_TRIGGER_POPUP, false)
+            val svcIntent = Intent(context, JblBridgeService::class.java).apply {
+                putExtra(BridgeContract.EXTRA_CMD, cmd)
+                putExtra(BridgeContract.EXTRA_TRIGGER_POPUP, triggerPopup)
+                intent.getStringExtra(BridgeContract.EXTRA_NOISE_MODE)?.let {
+                    putExtra(BridgeContract.EXTRA_NOISE_MODE, it)
                 }
-                startBridgeService(context, svcIntent)
+                intent.getStringExtra(BridgeContract.EXTRA_EQ_PRESET)?.let {
+                    putExtra(BridgeContract.EXTRA_EQ_PRESET, it)
+                }
+                putExtra(BridgeContract.EXTRA_FIND_LEFT, intent.getBooleanExtra(BridgeContract.EXTRA_FIND_LEFT, false))
+            }
+            startBridgeService(context, svcIntent)
+            return
+        }
+
+        if (!cfg.enabled) return
+
+        when (action) {
+            BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                val device = extractDevice(intent) ?: return
+                val name = runCatching { device.name }.getOrNull()
+                val cachedMac = prefs.loadSnapshot().mac
+                if (!BridgeContract.isTargetJblName(name) &&
+                    !device.address.equals(cachedMac, ignoreCase = true)
+                ) {
+                    return
+                }
+                Log.i(TAG, "JBL Tune 230NC disconnected ($name), dismissing Fluid Cloud & overlay")
+                FluidCloudNotifier.dismiss(context)
+                EarbudsPopupOverlay.dismiss()
+                JblBatteryWidgetProvider.updateAll(context)
             }
 
             BluetoothDevice.ACTION_ACL_CONNECTED,
@@ -50,13 +77,7 @@ class JblBridgeReceiver : BroadcastReceiver() {
                 if (action != BluetoothDevice.ACTION_ACL_CONNECTED && state != BluetoothProfile.STATE_CONNECTED) {
                     return
                 }
-                val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                } ?: return
-
+                val device = extractDevice(intent) ?: return
                 val name = runCatching { device.name }.getOrNull()
                 if (!BridgeContract.isTargetJblName(name)) return
 
@@ -64,9 +85,11 @@ class JblBridgeReceiver : BroadcastReceiver() {
                 if (now - lastConnectTriggerMs < CONNECT_COOLDOWN_MS) return
                 lastConnectTriggerMs = now
 
-                Log.i(TAG, "JBL Tune 230NC connected ($name / $action), launching standalone takeover sync")
+                Log.i(TAG, "JBL Tune 230NC connected ($name / $action), updating Melody hook + Fluid Cloud")
 
-                if (cfg.autoPopupOnConnect && !TakeoverBridge.foregroundLinkActive.get()) {
+                val wantPrompt = (cfg.useFluidCloud || cfg.autoPopupOnConnect || cfg.melodySpoofEnabled) &&
+                    !TakeoverBridge.foregroundLinkActive.get()
+                if (wantPrompt) {
                     val sysLevel = runCatching { BatteryReflection.read(device).level }.getOrNull()
                     val cached = prefs.loadSnapshot().copy(mac = device.address)
                     val initial = if (sysLevel != null && cached.leftBattery == null) {
@@ -77,21 +100,31 @@ class JblBridgeReceiver : BroadcastReceiver() {
                     TakeoverBridge.pushRawSnapshot(
                         context = context,
                         snap = initial,
-                        deviceName = name ?: "JBL TUNE230NC TWS",
+                        deviceName = name ?: "JBL Tune 230NC",
                         controlReady = false,
-                        triggerPopup = true
+                        triggerPopup = cfg.useFluidCloud || cfg.autoPopupOnConnect,
+                        triggerMelodyPopup = cfg.melodySpoofEnabled && cfg.melodyAutoPopup,
+                        triggerMelodyCapsule = cfg.melodySpoofEnabled && cfg.melodyAutoCapsule
                     )
                 }
 
                 val svcIntent = Intent(context, JblBridgeService::class.java).apply {
                     putExtra(BridgeContract.EXTRA_CMD, BridgeContract.CMD_CONNECT_AND_SYNC)
                     putExtra(BridgeContract.EXTRA_MAC, device.address)
-                    putExtra(BridgeContract.EXTRA_TRIGGER_POPUP, cfg.autoPopupOnConnect)
+                    putExtra(BridgeContract.EXTRA_TRIGGER_POPUP, cfg.useFluidCloud || cfg.autoPopupOnConnect)
                 }
                 startBridgeService(context, svcIntent)
             }
         }
     }
+
+    private fun extractDevice(intent: Intent): BluetoothDevice? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        }
 
     private fun startBridgeService(context: Context, svcIntent: Intent) {
         try {
@@ -108,6 +141,7 @@ class JblBridgeReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "JblBridgeReceiver"
         private const val CONNECT_COOLDOWN_MS = 10_000L
+
         @Volatile
         private var lastConnectTriggerMs = 0L
     }

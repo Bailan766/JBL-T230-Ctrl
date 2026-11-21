@@ -11,9 +11,17 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <queries>
+        <package android:name="com.oplus.melody" />
+        <package android:name="com.heytap.accessory" />
+        <package android:name="com.oplus.wirelesssettings" />
+        <package android:name="jbl.stc.com" />
+    </queries>
 
     <application
         android:allowBackup="false"
@@ -21,6 +29,19 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.JblT230Ctrl">
+
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="OPPO ColorOS 欢律官方耳机伪装：让 JBL Tune 230NC TWS 原生触发 OPPO Enco 3D 开盖弹窗、欢律流体云胶囊与三端电量/降噪联动" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+        <meta-data
+            android:name="xposedscope"
+            android:resource="@array/xposedscope" />
 
         <activity
             android:name=".MainActivity"
@@ -43,7 +64,9 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="com.jblt230.ctrl.ACTION_REMOTE_COMMAND" />
+                <action android:name="com.jblt230.ctrl.ACTION_MELODY_HOOK_ACK" />
                 <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+                <action android:name="android.bluetooth.device.action.ACL_DISCONNECTED" />
                 <action android:name="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED" />
                 <action android:name="android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED" />
             </intent-filter>

@@ -8,6 +8,7 @@ import android.os.Build
 import androidx.core.content.FileProvider
 import com.jblt230.ctrl.BuildConfig
 import com.jblt230.ctrl.ble.LinkState
+import com.jblt230.ctrl.bridge.FluidCloudNotifier
 import com.jblt230.ctrl.bridge.TakeoverConfig
 import com.jblt230.ctrl.data.UiState
 import java.io.File
@@ -45,6 +46,8 @@ object DiagnosticReportFormatter {
         val sdkInt: Int,
         val permissionsGranted: Boolean,
         val overlayGranted: Boolean,
+        val fluidCloudPromotedEnabled: Boolean = false,
+        val fluidCloudCharacteristicsOk: Boolean? = null,
         val takeoverEnabled: Boolean,
         val autoPopupOnConnect: Boolean,
         val keepLinkAlive: Boolean,
@@ -69,6 +72,7 @@ object DiagnosticReportFormatter {
         sb.appendLine()
         sb.appendLine("--- 1. 权限、系统蓝牙与接管配置 ---")
         sb.appendLine("蓝牙权限: ${if (env.permissionsGranted) "已授予" else "缺失"}")
+        sb.appendLine("流体云/LiveUpdate: promoted=${env.fluidCloudPromotedEnabled}, promotableChars=${env.fluidCloudCharacteristicsOk}")
         sb.appendLine("悬浮窗权限: ${if (env.overlayGranted) "已授予" else "未授权"}")
         sb.appendLine("后台接管: enabled=${env.takeoverEnabled}, autoPopup=${env.autoPopupOnConnect}, keepLinkAlive=${env.keepLinkAlive}")
         sb.appendLine("目标耳机: ${env.pairedName.ifBlank { "--" }} | A2DP=${env.a2dpConnected}, HFP=${env.hfpConnected}, SysBat=${env.systemBattery ?: "--"}%")
@@ -113,6 +117,7 @@ object DiagnosticExporter {
         state: UiState,
         cfg: TakeoverConfig,
         overlayGranted: Boolean,
+        fluidStatus: FluidCloudNotifier.FluidCloudStatus,
         discoveredServices: String
     ): DiagnosticReportFormatter.EnvironmentInfo {
         val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
@@ -132,6 +137,8 @@ object DiagnosticExporter {
             sdkInt = Build.VERSION.SDK_INT,
             permissionsGranted = state.permissionsGranted,
             overlayGranted = overlayGranted,
+            fluidCloudPromotedEnabled = fluidStatus.canPostPromoted,
+            fluidCloudCharacteristicsOk = fluidStatus.lastPromotable,
             takeoverEnabled = cfg.enabled,
             autoPopupOnConnect = cfg.autoPopupOnConnect,
             keepLinkAlive = cfg.keepLinkAlive,
