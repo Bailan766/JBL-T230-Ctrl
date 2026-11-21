@@ -15,7 +15,11 @@ class JblColorOsModule : IXposedHookLoadPackage {
             BridgeContract.PKG_MELODY,
             BridgeContract.PKG_ACCESSORY,
             BridgeContract.PKG_WIRELESS_SETTINGS -> {
-                MelodySpoofHooks.install(lpparam.classLoader, lpparam.packageName)
+                MelodySpoofHooks.install(
+                    lpparam.classLoader,
+                    lpparam.packageName,
+                    lpparam.processName ?: lpparam.packageName
+                )
             }
 
             BridgeContract.PKG_JBL_OFFICIAL -> {

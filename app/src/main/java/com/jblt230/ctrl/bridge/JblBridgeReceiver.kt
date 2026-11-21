@@ -25,7 +25,9 @@ class JblBridgeReceiver : BroadcastReceiver() {
 
         val action = intent.action ?: return
         if (action == BridgeContract.ACTION_MELODY_HOOK_ACK) {
-            TakeoverBridge.markMelodyHookAlive()
+            val stage = intent.getStringExtra(BridgeContract.EXTRA_HOOK_STAGE) ?: "ack"
+            val status = intent.getStringExtra(BridgeContract.EXTRA_HOOK_STATUS) ?: "欢律进程已实时握手"
+            TakeoverBridge.markMelodyHookAlive(stage = stage, status = status)
             return
         }
 
@@ -104,7 +106,7 @@ class JblBridgeReceiver : BroadcastReceiver() {
                         controlReady = false,
                         triggerPopup = cfg.useFluidCloud || cfg.autoPopupOnConnect,
                         triggerMelodyPopup = cfg.melodySpoofEnabled && cfg.melodyAutoPopup,
-                        triggerMelodyCapsule = cfg.melodySpoofEnabled && cfg.melodyAutoCapsule
+                        triggerMelodyCapsule = cfg.melodySpoofEnabled && !cfg.melodyAutoPopup && cfg.melodyAutoCapsule
                     )
                 }
 

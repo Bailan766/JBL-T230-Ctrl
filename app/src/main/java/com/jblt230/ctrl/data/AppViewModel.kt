@@ -28,6 +28,7 @@ import com.jblt230.ctrl.bridge.BridgeContract
 import com.jblt230.ctrl.bridge.EarbudsPopupOverlay
 import com.jblt230.ctrl.bridge.FluidCloudNotifier
 import com.jblt230.ctrl.bridge.JblBridgeService
+import com.jblt230.ctrl.bridge.RootMelodyWake
 import com.jblt230.ctrl.bridge.TakeoverBridge
 import com.jblt230.ctrl.bridge.TakeoverConfig
 import com.jblt230.ctrl.bridge.TakeoverPrefs
@@ -39,6 +40,7 @@ import com.jblt230.ctrl.logging.ProtocolLog
 import com.jblt230.ctrl.protocol.CommandTable
 import com.jblt230.ctrl.protocol.Confidence
 import com.jblt230.ctrl.system.SystemBaseline
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -83,6 +85,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val fluidCloudReady: StateFlow<Boolean> = _fluidCloudReady
 
     val melodyHookAlive: StateFlow<Boolean> = TakeoverBridge.melodyHookAlive
+    val melodyHookStatus: StateFlow<String> = TakeoverBridge.melodyHookStatus
+
+    private val _rootBusy = MutableStateFlow(false)
+    val rootBusy: StateFlow<Boolean> = _rootBusy
 
     private val _diagSteps = MutableStateFlow<List<DiagStep>>(emptyList())
     val diagSteps: StateFlow<List<DiagStep>> = _diagSteps
@@ -1324,47 +1330,152 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         base.update { it.copy(message = "已推送 ColorOS 流体云胶囊与实时通知") }
     }
 
+    fun pingMelodyHook() {
+        if (!_takeoverConfig.value.melodySpoofEnabled) return
+        val ctx = getApplication<Application>()
+        TakeoverBridge.pushUiState(ctx, ensureMacSnapshotState(), triggerPopup = false)
+    }
+
+    fun restartAndWakeMelody() {
+        if (_rootBusy.value) return
+        _rootBusy.value = true
+        val ctx = getApplication<Application>()
+        TakeoverBridge.resetMelodyHookStatus("正在以 Root 权限重启并唤醒欢律…")
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val res = RootMelodyWake.restartAndWakeMelody()
+                if (!res.ok) {
+                    val reason = res.output.ifBlank { "未授予 Root 权限 (exit=${res.exitCode})" }
+                    TakeoverBridge.resetMelodyHookStatus("Root 唤醒欢律失败：$reason")
+                    base.update { it.copy(message = "Root 重启欢律失败：$reason") }
+                    return@launch
+                }
+                delay(550L)
+                val effective = ensureMacSnapshotState()
+                TakeoverBridge.pushUiState(ctx, effective, triggerPopup = false)
+                delay(500L)
+                base.update {
+                    it.copy(
+                        message = if (TakeoverBridge.melodyHookAlive.value) {
+                            "欢律已重启并握手成功：${TakeoverBridge.melodyHookStatus.value}"
+                        } else {
+                            "欢律已由 Root 拉起 (exit=0)，但未收到 LSPosed 握手；请确认已在 LSPosed 勾选 com.oplus.melody"
+                        }
+                    )
+                }
+            } finally {
+                _rootBusy.value = false
+            }
+        }
+    }
+
     fun triggerMelodyPopup() {
         val ctx = getApplication<Application>()
         val effective = ensureMacSnapshotState()
-        TakeoverBridge.pushUiState(
-            ctx,
-            effective,
-            triggerPopup = false,
-            triggerMelodyPopup = true,
-            triggerMelodyCapsule = false
-        )
-        triggerBackgroundSyncIfOffline(triggerPopup = false)
-        base.update {
-            it.copy(
-                message = if (melodyHookAlive.value) {
-                    "已向欢律推送原生 3D 开盖弹窗指令（型号：${_takeoverConfig.value.spoofModelName}）"
-                } else {
-                    "已发送欢律 3D 弹窗指令；若未弹窗请在 LSPosed 勾选欢律作用域并重启欢律"
+        val mac = effective.system.deviceAddress.ifBlank { takeoverPrefs.loadSnapshot().mac }
+        if (mac.isBlank()) {
+            base.update { it.copy(message = "未找到已配对 JBL Tune 230NC，请先在系统蓝牙配对或开启权限") }
+            return
+        }
+        if (_rootBusy.value) return
+        _rootBusy.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var wakeOk = true
+                var wakeOutput = ""
+                if (!TakeoverBridge.melodyHookAlive.value) {
+                    val wake = RootMelodyWake.wakeMelodyMainProcess()
+                    wakeOk = wake.ok
+                    wakeOutput = wake.output
+                    if (wake.ok) {
+                        delay(500L)
+                    }
                 }
-            )
+                TakeoverBridge.pushUiState(
+                    ctx,
+                    effective,
+                    triggerPopup = false,
+                    triggerMelodyPopup = true,
+                    triggerMelodyCapsule = false
+                )
+                triggerBackgroundSyncIfOffline(triggerPopup = false)
+                delay(900L)
+
+                if (TakeoverBridge.appInForeground.get()) {
+                    if (TakeoverBridge.melodyHookAlive.value) {
+                        val preset = BridgeContract.presetByName(_takeoverConfig.value.spoofModelName)
+                        val rootLaunch = RootMelodyWake.launchDiscoveryActivityAsRoot(
+                            mac = mac,
+                            pidHex = preset.fallbackProductIdHex,
+                            modelName = preset.melodyName,
+                            productType = preset.productType,
+                            color = preset.defaultColor
+                        )
+                        base.update {
+                            it.copy(
+                                message = if (rootLaunch.ok) {
+                                    "已通过 Root 拉起欢律原生 3D 弹窗（${preset.melodyName}）"
+                                } else {
+                                    "${TakeoverBridge.melodyHookStatus.value}；后台弹框被系统拦截且 Root 失败：${rootLaunch.output}"
+                                }
+                            )
+                        }
+                    } else {
+                        base.update {
+                            it.copy(
+                                message = if (wakeOk) {
+                                    "已唤醒欢律，但 LSPosed Hook 未握手！请在 LSPosed 勾选「欢律(com.oplus.melody)」，再点「Root 重启欢律」（首次启用模块建议重启手机）"
+                                } else {
+                                    "未能唤醒欢律（${wakeOutput.ifBlank { "Root 权限未授予" }}），且未收到 LSPosed Hook 握手"
+                                }
+                            )
+                        }
+                    }
+                } else {
+                    base.update {
+                        it.copy(message = "欢律原生 3D 弹窗已显示：${TakeoverBridge.melodyHookStatus.value}")
+                    }
+                }
+            } finally {
+                _rootBusy.value = false
+            }
         }
     }
 
     fun triggerMelodyCapsule() {
         val ctx = getApplication<Application>()
         val effective = ensureMacSnapshotState()
-        TakeoverBridge.pushUiState(
-            ctx,
-            effective,
-            triggerPopup = false,
-            triggerMelodyPopup = false,
-            triggerMelodyCapsule = true
-        )
-        triggerBackgroundSyncIfOffline(triggerPopup = false)
-        base.update {
-            it.copy(
-                message = if (melodyHookAlive.value) {
-                    "已向欢律推送原生流体云胶囊（含左右耳/盒电量与 3D 动效）"
-                } else {
-                    "已发送欢律胶囊指令；若未激活请在 LSPosed 勾选 com.oplus.melody"
+        if (_rootBusy.value) return
+        _rootBusy.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (!TakeoverBridge.melodyHookAlive.value) {
+                    val wake = RootMelodyWake.wakeMelodyMainProcess()
+                    if (wake.ok) {
+                        delay(500L)
+                    }
                 }
-            )
+                TakeoverBridge.pushUiState(
+                    ctx,
+                    effective,
+                    triggerPopup = false,
+                    triggerMelodyPopup = false,
+                    triggerMelodyCapsule = true
+                )
+                triggerBackgroundSyncIfOffline(triggerPopup = false)
+                delay(500L)
+                base.update {
+                    it.copy(
+                        message = if (TakeoverBridge.melodyHookAlive.value) {
+                            TakeoverBridge.melodyHookStatus.value
+                        } else {
+                            "未收到欢律 Hook 握手，请点「Root 重启欢律」或确认已在 LSPosed 勾选 com.oplus.melody"
+                        }
+                    )
+                }
+            } finally {
+                _rootBusy.value = false
+            }
         }
     }
 

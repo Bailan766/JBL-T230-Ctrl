@@ -19,12 +19,32 @@ import java.util.concurrent.atomic.AtomicBoolean
 object TakeoverBridge {
 
     val foregroundLinkActive = AtomicBoolean(false)
+    val appInForeground = AtomicBoolean(false)
 
     private val _melodyHookAlive = MutableStateFlow(false)
     val melodyHookAlive: StateFlow<Boolean> = _melodyHookAlive.asStateFlow()
 
-    fun markMelodyHookAlive() {
+    private val _melodyHookStage = MutableStateFlow("waiting")
+    val melodyHookStage: StateFlow<String> = _melodyHookStage.asStateFlow()
+
+    private val _melodyHookStatus = MutableStateFlow("等待与欢律握手（可点 Root 重启欢律）")
+    val melodyHookStatus: StateFlow<String> = _melodyHookStatus.asStateFlow()
+
+    fun markMelodyHookAlive(
+        stage: String = "ack",
+        status: String = "欢律进程已实时握手"
+    ) {
         _melodyHookAlive.value = true
+        _melodyHookStage.value = stage
+        if (status.isNotBlank()) {
+            _melodyHookStatus.value = status
+        }
+    }
+
+    fun resetMelodyHookStatus(status: String) {
+        _melodyHookAlive.value = false
+        _melodyHookStage.value = "restarting"
+        _melodyHookStatus.value = status
     }
 
     fun pushUiState(
@@ -135,6 +155,7 @@ object TakeoverBridge {
             putExtra(BridgeContract.EXTRA_SPOOF_MODEL, preset.melodyName)
             putExtra(BridgeContract.EXTRA_SPOOF_PID, preset.fallbackProductIdHex)
             putExtra(BridgeContract.EXTRA_SPOOF_COLOR, preset.defaultColor)
+            putExtra(BridgeContract.EXTRA_SPOOF_TYPE, preset.productType)
             putExtra(BridgeContract.EXTRA_LEFT_BATTERY, snap.leftBattery ?: -1)
             putExtra(BridgeContract.EXTRA_RIGHT_BATTERY, snap.rightBattery ?: -1)
             putExtra(BridgeContract.EXTRA_CASE_BATTERY, snap.caseBattery ?: -1)

@@ -424,6 +424,8 @@ private fun EarbudsScreen(
 ) {
     val fluidReady by vm.fluidCloudReady.collectAsState()
     val melodyAlive by vm.melodyHookAlive.collectAsState()
+    val melodyStatus by vm.melodyHookStatus.collectAsState()
+    val rootBusy by vm.rootBusy.collectAsState()
     val cfg by vm.takeoverConfig.collectAsState()
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -574,23 +576,23 @@ private fun EarbudsScreen(
             title = "OPPO 官方耳机伪装 · ${cfg.spoofModelName}",
             subtitle = when {
                 !cfg.melodySpoofEnabled -> "已关闭欢律伪装（可在设置重新开启）"
-                melodyAlive -> "LSPosed Hook 已激活 · 触发欢律官方 3D 开盖弹窗与原生流体云"
-                else -> "待 LSPosed 勾选欢律(com.oplus.melody)并强行停止欢律一次"
+                melodyAlive -> melodyStatus
+                else -> "待激活 · 点右侧「Root 重启欢律」或确认 LSPosed 已勾选欢律"
             }
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(
                     onClick = { vm.triggerMelodyPopup() },
-                    enabled = cfg.melodySpoofEnabled,
+                    enabled = cfg.melodySpoofEnabled && !rootBusy,
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = p.accent, contentColor = Color.White),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("欢律 3D 弹窗", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(if (rootBusy) "执行中…" else "欢律 3D 弹窗", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
                 Button(
                     onClick = { vm.triggerMelodyCapsule() },
-                    enabled = cfg.melodySpoofEnabled,
+                    enabled = cfg.melodySpoofEnabled && !rootBusy,
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (melodyAlive) p.green else p.track,
@@ -602,12 +604,19 @@ private fun EarbudsScreen(
                 }
             }
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (melodyAlive) "状态：欢律进程已实时握手" else "状态：等待欢律触发（也可用本机流体云兜底）",
+                    melodyStatus,
                     fontSize = 11.sp,
                     color = if (melodyAlive) p.green else p.muted,
                     modifier = Modifier.weight(1f)
+                )
+                PillChip(
+                    text = if (rootBusy) "重启中…" else "Root 重启欢律",
+                    selected = false,
+                    enabled = cfg.melodySpoofEnabled && !rootBusy,
+                    p = p,
+                    onClick = { vm.restartAndWakeMelody() }
                 )
                 PillChip(
                     text = if (fluidReady) "本机流体云" else "开启权限",
@@ -1033,6 +1042,8 @@ private fun SettingsScreen(state: UiState, vm: AppViewModel, p: ColorOsPalette) 
     val ctx = LocalContext.current
     val cfg by vm.takeoverConfig.collectAsState()
     val melodyAlive by vm.melodyHookAlive.collectAsState()
+    val melodyStatus by vm.melodyHookStatus.collectAsState()
+    val rootBusy by vm.rootBusy.collectAsState()
     val fluidReady by vm.fluidCloudReady.collectAsState()
     val overlayOk by vm.overlayGranted.collectAsState()
     val running by vm.diagRunning.collectAsState()
@@ -1060,10 +1071,10 @@ private fun SettingsScreen(state: UiState, vm: AppViewModel, p: ColorOsPalette) 
         FluidCard(
             p = p,
             title = "LSPosed 官方耳机伪装（Root）",
-            subtitle = "在 LSPosed 勾选作用域：com.oplus.melody（欢律）、com.oplus.wirelesssettings、com.heytap.accessory 后强行停止欢律即可生效"
+            subtitle = "在 LSPosed 勾选作用域：com.oplus.melody（欢律）、com.oplus.wirelesssettings、com.heytap.accessory 后点下方「Root 重启欢律」即可激活"
         ) {
             Text(
-                text = if (melodyAlive) "欢律 Hook 状态：已激活并在实时同步" else "欢律 Hook 状态：待激活（勾选作用域并强行停止欢律后重试）",
+                text = "欢律 Hook 状态：$melodyStatus",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 color = if (melodyAlive) p.green else p.amber
@@ -1105,20 +1116,27 @@ private fun SettingsScreen(state: UiState, vm: AppViewModel, p: ColorOsPalette) 
                 }
             }
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(
                     onClick = { vm.triggerMelodyPopup() },
-                    enabled = cfg.melodySpoofEnabled,
+                    enabled = cfg.melodySpoofEnabled && !rootBusy,
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = p.accent, contentColor = Color.White),
                     modifier = Modifier.weight(1f)
-                ) { Text("测试 3D 弹窗", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                ) { Text(if (rootBusy) "执行中…" else "测试 3D 弹窗", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
                 PillChip(
                     text = "测试原生胶囊",
                     selected = false,
-                    enabled = cfg.melodySpoofEnabled,
+                    enabled = cfg.melodySpoofEnabled && !rootBusy,
                     p = p,
                     onClick = { vm.triggerMelodyCapsule() }
+                )
+                PillChip(
+                    text = if (rootBusy) "重启中…" else "Root 重启欢律",
+                    selected = false,
+                    enabled = cfg.melodySpoofEnabled && !rootBusy,
+                    p = p,
+                    onClick = { vm.restartAndWakeMelody() }
                 )
             }
         }

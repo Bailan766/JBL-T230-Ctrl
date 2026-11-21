@@ -47,6 +47,10 @@ object BridgeContract {
     const val EXTRA_SPOOF_MODEL = "spoof_model"
     const val EXTRA_SPOOF_PID = "spoof_pid"
     const val EXTRA_SPOOF_COLOR = "spoof_color"
+    const val EXTRA_SPOOF_TYPE = "spoof_type"
+    const val EXTRA_HOOK_PROCESS = "hook_process"
+    const val EXTRA_HOOK_STAGE = "hook_stage"
+    const val EXTRA_HOOK_STATUS = "hook_status"
     const val EXTRA_LEFT_BATTERY = "left_battery"
     const val EXTRA_RIGHT_BATTERY = "right_battery"
     const val EXTRA_CASE_BATTERY = "case_battery"
@@ -62,14 +66,17 @@ object BridgeContract {
         val id: String,
         val melodyName: String,
         val fallbackProductIdHex: String,
-        val defaultColor: Int
+        val defaultColor: Int,
+        val productType: String = "T1"
     )
 
     val SPOOF_PRESETS = listOf(
-        SpoofModelPreset("enco_x2", "OPPO Enco X2", "060414", 1),
-        SpoofModelPreset("enco_free3", "OPPO Enco Free3", "060814", 1),
-        SpoofModelPreset("enco_air3_pro", "OPPO Enco Air3 Pro", "030301", 1),
-        SpoofModelPreset("enco_air2", "OPPO Enco Air2", "030101", 1)
+        SpoofModelPreset("enco_x2", "OPPO Enco X2", "063C10", 0, "T1"),
+        SpoofModelPreset("enco_x3", "OPPO Enco X3", "067410", 0, "T1"),
+        SpoofModelPreset("enco_air4_pro", "OPPO Enco Air4 Pro", "067C10", 0, "T1"),
+        SpoofModelPreset("enco_free3", "OPPO Enco Free3", "066010", 0, "T2"),
+        SpoofModelPreset("oneplus_buds_pro3", "OnePlus Buds Pro 3", "064014", 0, "T1"),
+        SpoofModelPreset("realme_buds_air7_pro", "realme Buds Air7 Pro", "064C12", 0, "T1")
     )
 
     fun presetByName(name: String?): SpoofModelPreset =
@@ -157,7 +164,7 @@ object BridgeContract {
         else -> NoiseMode.OFF
     }
 
-    fun parseProductIdInt(hexOrDec: String?, fallback: Int = 0x060414): Int {
+    fun parseProductIdInt(hexOrDec: String?, fallback: Int = 0x063C10): Int {
         if (hexOrDec.isNullOrBlank()) return fallback
         val clean = hexOrDec.trim().removePrefix("0x").removePrefix("0X")
         return clean.toIntOrNull(16) ?: fallback

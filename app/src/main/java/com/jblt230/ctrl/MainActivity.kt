@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import com.jblt230.ctrl.bridge.TakeoverBridge
 import com.jblt230.ctrl.data.AppViewModel
 import com.jblt230.ctrl.ui.AppRoot
 
@@ -57,9 +58,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        TakeoverBridge.appInForeground.set(true)
         vm.setPermissions(hasBluetoothPermissions())
         vm.refreshPermissionStates()
         vm.autoConnectIfReady()
+        vm.pingMelodyHook()
+    }
+
+    override fun onPause() {
+        TakeoverBridge.appInForeground.set(false)
+        super.onPause()
     }
 
     /** Release idle link on background unless user explicitly enables persistent takeover. */

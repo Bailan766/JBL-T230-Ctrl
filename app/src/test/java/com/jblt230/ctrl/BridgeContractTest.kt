@@ -3,12 +3,15 @@ package com.jblt230.ctrl
 import com.jblt230.ctrl.ble.FrameCodec
 import com.jblt230.ctrl.ble.NoiseMode
 import com.jblt230.ctrl.bridge.BridgeContract
+import com.jblt230.ctrl.bridge.RootMelodyWake
 import com.jblt230.ctrl.logging.DiagStatus
 import com.jblt230.ctrl.logging.DiagStep
 import com.jblt230.ctrl.logging.DiagnosticReportFormatter
 import com.jblt230.ctrl.logging.LogEntry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -143,5 +146,52 @@ class BridgeContractTest {
         for (p in listOf("off", "jazz", "vocal", "bass", "club", "studio", "extreme_bass", "custom")) {
             assertEquals(p, BridgeContract.colorOsTypeToEqPreset(BridgeContract.eqPresetToColorOsType(p)))
         }
+    }
+
+    @Test
+    fun spoofPresetsMatchVerifiedMelodyWhitelistIdsAndColors() {
+        val byName = BridgeContract.SPOOF_PRESETS.associateBy { it.melodyName }
+        assertEquals("063C10", byName["OPPO Enco X2"]?.fallbackProductIdHex)
+        assertEquals("067410", byName["OPPO Enco X3"]?.fallbackProductIdHex)
+        assertEquals("067C10", byName["OPPO Enco Air4 Pro"]?.fallbackProductIdHex)
+        assertEquals("066010", byName["OPPO Enco Free3"]?.fallbackProductIdHex)
+        assertEquals("T2", byName["OPPO Enco Free3"]?.productType)
+        assertEquals("064014", byName["OnePlus Buds Pro 3"]?.fallbackProductIdHex)
+        assertEquals("064C12", byName["realme Buds Air7 Pro"]?.fallbackProductIdHex)
+        assertTrue(BridgeContract.SPOOF_PRESETS.all { it.defaultColor == 0 })
+        assertEquals(0x063C10, BridgeContract.parseProductIdInt(null))
+    }
+
+    @Test
+    fun rootMelodyWakeSanitizesMacPidAndBuildsSafeDiscoveryCommand() {
+        assertEquals("AA:BB:CC:11:22:33", RootMelodyWake.sanitizeMac(" aa:bb:cc:11:22:33 "))
+        assertNull(RootMelodyWake.sanitizeMac("AA:BB:CC:11:22:33; rm -rf /"))
+        assertNull(RootMelodyWake.sanitizeMac("invalid-mac"))
+
+        assertEquals("063C10", RootMelodyWake.sanitizePidHex("0x063c10"))
+        assertNull(RootMelodyWake.sanitizePidHex("063C10 && id"))
+
+        val cmd = RootMelodyWake.buildDiscoveryAmCommand(
+            mac = "aa:bb:cc:11:22:33",
+            pidHex = "063c10",
+            modelName = "OPPO Enco X2;whoami",
+            productType = "T1",
+            color = 0
+        )
+        assertNotNull(cmd)
+        assertTrue(cmd!!.contains("--es route_from onForwardConnectedPopup"))
+        assertTrue(cmd.contains("--es device_mac_info AA:BB:CC:11:22:33"))
+        assertTrue(cmd.contains("--es product_id 063C10"))
+        assertFalse(cmd.contains(";"))
+
+        assertNull(
+            RootMelodyWake.buildDiscoveryAmCommand(
+                mac = "not-a-mac",
+                pidHex = "063C10",
+                modelName = "OPPO Enco X2",
+                productType = "T1",
+                color = 0
+            )
+        )
     }
 }

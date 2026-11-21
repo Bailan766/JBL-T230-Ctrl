@@ -9,6 +9,7 @@ import androidx.core.content.FileProvider
 import com.jblt230.ctrl.BuildConfig
 import com.jblt230.ctrl.ble.LinkState
 import com.jblt230.ctrl.bridge.FluidCloudNotifier
+import com.jblt230.ctrl.bridge.TakeoverBridge
 import com.jblt230.ctrl.bridge.TakeoverConfig
 import com.jblt230.ctrl.data.UiState
 import java.io.File
@@ -56,7 +57,10 @@ object DiagnosticReportFormatter {
         val hfpConnected: Boolean,
         val systemBattery: Int?,
         val linkSummary: String,
-        val discoveredServices: String
+        val discoveredServices: String,
+        val melodySpoofEnabled: Boolean = false,
+        val melodyHookAlive: Boolean = false,
+        val melodyHookStatus: String = ""
     )
 
     fun format(
@@ -75,6 +79,7 @@ object DiagnosticReportFormatter {
         sb.appendLine("流体云/LiveUpdate: promoted=${env.fluidCloudPromotedEnabled}, promotableChars=${env.fluidCloudCharacteristicsOk}")
         sb.appendLine("悬浮窗权限: ${if (env.overlayGranted) "已授予" else "未授权"}")
         sb.appendLine("后台接管: enabled=${env.takeoverEnabled}, autoPopup=${env.autoPopupOnConnect}, keepLinkAlive=${env.keepLinkAlive}")
+        sb.appendLine("欢律 LSPosed: enabled=${env.melodySpoofEnabled}, alive=${env.melodyHookAlive}, status=${env.melodyHookStatus.ifBlank { "--" }}")
         sb.appendLine("目标耳机: ${env.pairedName.ifBlank { "--" }} | A2DP=${env.a2dpConnected}, HFP=${env.hfpConnected}, SysBat=${env.systemBattery ?: "--"}%")
         sb.appendLine("GATT 链路: ${env.linkSummary}")
         if (env.discoveredServices.isNotBlank()) {
@@ -147,7 +152,10 @@ object DiagnosticExporter {
             hfpConnected = state.system.hfpConnected,
             systemBattery = state.system.systemBattery,
             linkSummary = linkText,
-            discoveredServices = discoveredServices
+            discoveredServices = discoveredServices,
+            melodySpoofEnabled = cfg.melodySpoofEnabled,
+            melodyHookAlive = TakeoverBridge.melodyHookAlive.value,
+            melodyHookStatus = TakeoverBridge.melodyHookStatus.value
         )
     }
 
