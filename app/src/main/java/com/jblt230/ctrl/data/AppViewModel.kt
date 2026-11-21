@@ -128,6 +128,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val commandCount: Int = table.commands.size
 
     private var findBudsAutoStopJob: Job? = null
+    private var refreshJob: Job? = null
 
     private val base = MutableStateFlow(
         UiState(
@@ -244,6 +245,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun disconnect() {
         findBudsAutoStopJob?.cancel()
+        refreshJob?.cancel()
         TakeoverBridge.foregroundLinkActive.set(false)
         transport.release()
         base.update {
@@ -252,28 +254,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refreshAll() {
-        viewModelScope.launch {
-            try {
-                if (!state.value.controlReady) {
-                    system.refresh()
-                    return@launch
-                }
-                readDeviceInfoAndHandshake()
-                readAllStatus()
-                readBattery()
-                readNoiseState()
-                readEqState()
-                readGestures()
-                readSmartAudioVideo()
-                readVoiceAware()
-                readWearingAndTips()
-                readPowerAndVoicePrompts()
-                readSecondaryDeviceMeta()
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
+            refreshAllInternal()
+        }
+    }
+
+    private suspend fun refreshAllInternal() {
+        try {
+            if (!state.value.controlReady) {
                 system.refresh()
-                base.update { it.copy(message = "全量状态回读完成。") }
-            } catch (e: Throwable) {
-                base.update { it.copy(message = "回读状态异常: ${e.message ?: e.javaClass.simpleName}") }
+                return
             }
+            readDeviceInfoAndHandshake()
+            readAllStatus()
+            readBattery()
+            readNoiseState()
+            readEqState()
+            readGestures()
+            readSmartAudioVideo()
+            readVoiceAware()
+            readWearingAndTips()
+            readPowerAndVoicePrompts()
+            readSecondaryDeviceMeta()
+            system.refresh()
+            base.update { it.copy(message = "全量状态回读完成。") }
+        } catch (e: Throwable) {
+            base.update { it.copy(message = "回读状态异常: ${e.message ?: e.javaClass.simpleName}") }
         }
     }
 
@@ -282,8 +289,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun readDeviceInfoAndHandshake() {
         val infoFrame = queue.read("device_info_read")
         val info = infoFrame?.let { FrameCodec.parseDeviceInfo(it) }
-        // Send official sync_app_status handshake frame (AA 10 02 00 00)
-        queue.read("sync_app_status")
+        // Fire sync_app_status with short timeout; FW 3.7.0 does not send a dedicated 0x00 ACK
+        queue.read("sync_app_status", timeoutOverrideMs = 200L)
         if (info != null) {
             base.update {
                 it.copy(
@@ -364,12 +371,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         val mode = modeFrame?.let { FrameCodec.parseNoiseMode(it) }
 
-        val subFrame = queue.read("anc_submode_read") { f ->
+        val subFrame = queue.read("anc_submode_read", timeoutOverrideMs = 350L) { f ->
             f.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x02
         }
         val subMode = subFrame?.let { FrameCodec.parseAncSubMode(it) }
 
-        val advFrame = queue.read("advance_anc_read") { f ->
+        val advFrame = queue.read("advance_anc_read", timeoutOverrideMs = 350L) { f ->
             f.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x22
         }
         val adv = advFrame?.let { FrameCodec.parseAdvanceAnc(it) }
@@ -898,11 +905,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // -------------------------------------------------------- Wearing, Auto Play/Pause, Fit Test, Tips
 
     private suspend fun readWearingAndTips() {
-        val inEarFrame = queue.read("in_ear_read") { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x41 }
+        val inEarFrame = queue.read("in_ear_read", timeoutOverrideMs = 350L) {
+            it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x41
+        }
         val inEar = inEarFrame?.let { FrameCodec.parseInEarStatus(it) }
-        val appFrame = queue.read("auto_play_pause_read") { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x38 }
+        val appFrame = queue.read("auto_play_pause_read") {
+            it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x38
+        }
         val autoPlay = appFrame?.let { FrameCodec.parseAutoPlayPauseStatus(it) }
-        val tipsFrame = queue.read("tips_type_read")
+        val tipsFrame = queue.read("tips_type_read", timeoutOverrideMs = 350L)
         val tips = tipsFrame?.let { FrameCodec.parseTipsType(it) }
 
         base.update { s ->
@@ -1005,7 +1016,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val keepAnc = standbyFrame?.let { FrameCodec.parseStandbyModeKeepAnc(it) }
         val autoOffFrame = queue.read("auto_off_read") { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x33 }
         val autoOff = autoOffFrame?.let { FrameCodec.parseAutoOffStatus(it) }
-        val vpStatusFrame = queue.read("voice_prompt_status_read")
+        val vpStatusFrame = queue.read("voice_prompt_status_read", timeoutOverrideMs = 350L)
         val vpStatus = vpStatusFrame?.let { FrameCodec.parseVoicePrompt(it) }
         val vpLangFrame = queue.read("voice_prompt_lang_read")
         val vpLang = vpLangFrame?.let { FrameCodec.parseVoicePrompt(it) }
@@ -1368,6 +1379,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             try {
+                // Serialize against any in-flight refreshAll() so zero frames collide on the single GATT link.
+                refreshJob?.join()
+
                 fun appendStep(step: DiagStep) {
                     _diagSteps.value = _diagSteps.value + step
                 }
@@ -1462,6 +1476,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val key: String,
                     val label: String,
                     val cmdName: String,
+                    val optional: Boolean = false,
+                    val skipReason: String = "",
                     val filter: (Frame) -> Boolean = { true },
                     val summarize: (Frame) -> String?
                 )
@@ -1490,14 +1506,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         FrameCodec.parseNoiseMode(f)?.let { "模式=${it.label}" }
                     },
                     ReadProbe(
-                        "adv_anc",
-                        "环境感知等级 (0x22)",
-                        "advance_anc_read",
-                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x22 }
-                    ) { f ->
-                        FrameCodec.parseAdvanceAnc(f)?.let { "等级=${it.ambientAwareLevel}/7" }
-                    },
-                    ReadProbe(
                         "eq_preset",
                         "EQ 预设状态 (0x34)",
                         "eq_preset_status_read",
@@ -1505,62 +1513,102 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     ) { f ->
                         FrameCodec.parseEqPresetStatus(f)?.let { "槽位=0x%02X".format(it) }
                     },
-                    ReadProbe("gesture", "触控手势 (0x77)", "gesture_read") { f ->
+                    ReadProbe("gesture", "触控手势 (0x77)", "gesture_read_all") { f ->
                         FrameCodec.parseGestures(f)?.let { "左=${it.leftGroup.label}, 右=${it.rightGroup.label}" }
                     },
-                    ReadProbe(
-                        "in_ear",
-                        "入耳检测 (0x27)",
-                        "in_ear_read",
-                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x27 }
-                    ) { f ->
-                        FrameCodec.parseInEarStatus(f)?.let { "L=${it.leftInEar}, R=${it.rightInEar}" }
+                    ReadProbe("smart_av", "智能音视频 (0x83)", "smart_av_read") { f ->
+                        FrameCodec.parseSmartSwitch(f)?.let { "模式=${it.label}" }
+                    },
+                    ReadProbe("voice_aware", "通话自听 VoiceAware (0x98)", "voice_aware_read") { f ->
+                        FrameCodec.parseVoiceAware(f)?.let { "等级=${it.level}" }
                     },
                     ReadProbe(
                         "auto_play",
-                        "自动播放暂停 (0x35)",
+                        "自动播放暂停 (0x38)",
                         "auto_play_pause_read",
-                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x35 }
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x38 }
                     ) { f ->
                         FrameCodec.parseAutoPlayPauseStatus(f)?.let { "开启=$it" }
                     },
                     ReadProbe(
-                        "voice_prompt",
-                        "语音提示偏好 (0x93)",
-                        "voice_prompt_read",
-                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x93 }
+                        "multi_ai",
+                        "语音助手偏好 (0x35)",
+                        "multi_ai_read",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x35 }
                     ) { f ->
-                        FrameCodec.parseVoicePrompt(f)?.let { "仅提示音=${it.toneOnly}, v${it.version ?: "--"}" }
+                        FrameCodec.parseMultiAiStatus(f)?.let { "mode=0x%02X".format(it) }
                     },
-                    ReadProbe(
-                        "standby",
-                        "待机保留ANC (0x96)",
-                        "standby_read",
-                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x96 }
-                    ) { f ->
+                    ReadProbe("standby", "待机保留ANC (0x96)", "standby_mode_read") { f ->
                         FrameCodec.parseStandbyModeKeepAnc(f)?.let { "保留=$it" }
                     },
                     ReadProbe(
                         "auto_off",
                         "自动关机 (0x33)",
-                        "auto_poweroff_read",
+                        "auto_off_read",
                         filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x33 }
                     ) { f ->
                         FrameCodec.parseAutoOffStatus(f)?.let { (en, min) -> "开启=$en, ${min}m" }
                     },
-                    ReadProbe(
-                        "tips_type",
-                        "耳塞尺寸 (0x9C)",
-                        "tips_type_read",
-                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x9C }
-                    ) { f ->
-                        FrameCodec.parseTipsType(f)?.let { "type=$it" }
+                    ReadProbe("voice_lang", "语音包版本 (0x93 01)", "voice_prompt_lang_read") { f ->
+                        FrameCodec.parseVoicePrompt(f)?.let { "lang=${it.languageId}, v=${it.version ?: "--"}" }
+                    },
+                    ReadProbe("multi_status", "复合通话状态 (0x9B)", "multi_status_read") { f ->
+                        FrameCodec.parseMultiStatusCall(f)?.let { "通话中=$it" }
                     },
                     ReadProbe("serial", "序列号 (S/N)", "serial_number_read") { f ->
                         FrameCodec.parseSerialNumber(f)
                     },
                     ReadProbe("case_ver", "充电盒版本", "case_version_read") { f ->
                         FrameCodec.parseCaseVersion(f)
+                    },
+                    // Optional HW / firmware-dependent capability probes (not present on Tune 230NC FW 3.7.0)
+                    ReadProbe(
+                        "adv_anc",
+                        "环境感知等级 (0x91 21)",
+                        "advance_anc_read",
+                        optional = true,
+                        skipReason = "当前固件未开放 7 级环境感知调节",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x22 }
+                    ) { f ->
+                        FrameCodec.parseAdvanceAnc(f)?.let { "等级=${it.ambientAwareLevel}/7" }
+                    },
+                    ReadProbe(
+                        "anc_sub",
+                        "ANC 子模式 (0x91 01)",
+                        "anc_submode_read",
+                        optional = true,
+                        skipReason = "当前固件未开放 ANC 子模式接口",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x02 }
+                    ) { f ->
+                        FrameCodec.parseAncSubMode(f)?.let { "subMode=$it" }
+                    },
+                    ReadProbe(
+                        "in_ear",
+                        "入耳传感器 (0x41)",
+                        "in_ear_read",
+                        optional = true,
+                        skipReason = "该耳机硬件无光学入耳传感器",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x41 }
+                    ) { f ->
+                        FrameCodec.parseInEarStatus(f)?.let { "L=${it.leftInEar}, R=${it.rightInEar}" }
+                    },
+                    ReadProbe(
+                        "tips_type",
+                        "耳塞尺寸标记 (0x9C)",
+                        "tips_type_read",
+                        optional = true,
+                        skipReason = "当前固件未开放 0x9C 特性"
+                    ) { f ->
+                        FrameCodec.parseTipsType(f)?.let { "type=$it" }
+                    },
+                    ReadProbe(
+                        "voice_tone",
+                        "仅提示音状态 (0x93 04)",
+                        "voice_prompt_status_read",
+                        optional = true,
+                        skipReason = "当前固件不支持 0x93 04 查询"
+                    ) { f ->
+                        FrameCodec.parseVoicePrompt(f)?.let { "仅提示音=${it.toneOnly}" }
                     }
                 )
 
@@ -1568,16 +1616,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 for (probe in probes) {
                     _diagProgress.value = "测试中：${probe.label}..."
                     val t0 = System.currentTimeMillis()
-                    val frame = runCatching { queue.read(probe.cmdName, probe.filter) }.getOrNull()
+                    val timeout = if (probe.optional) 350L else null
+                    val frame = runCatching { queue.read(probe.cmdName, timeoutOverrideMs = timeout, match = probe.filter) }.getOrNull()
                     val dt = System.currentTimeMillis() - t0
                     if (frame == null) {
                         appendStep(
                             DiagStep(
                                 key = probe.key,
                                 label = probe.label,
-                                status = DiagStatus.FAIL,
+                                status = if (probe.optional) DiagStatus.SKIP else DiagStatus.FAIL,
                                 durationMs = dt,
-                                detail = "超时或未收到匹配回复"
+                                detail = if (probe.optional) probe.skipReason else "超时或未收到匹配回复"
                             )
                         )
                         continue
@@ -1681,7 +1730,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val p = _diagSteps.value.count { it.status == DiagStatus.PASS }
                 val w = _diagSteps.value.count { it.status == DiagStatus.WARN }
                 val f = _diagSteps.value.count { it.status == DiagStatus.FAIL }
-                val summary = "自检完成：通过 $p 项 · 警告 $w 项 · 失败 $f 项（点击导出日志发给我即可精准排障）"
+                val s = _diagSteps.value.count { it.status == DiagStatus.SKIP }
+                val summary = "自检完成：通过 $p · 跳过(硬件不支持) $s · 警告 $w · 失败 $f"
                 _diagProgress.value = summary
                 base.update { it.copy(message = summary) }
             } catch (e: Throwable) {

@@ -79,9 +79,10 @@ object DiagnosticReportFormatter {
         sb.appendLine()
 
         val passCount = steps.count { it.status == DiagStatus.PASS }
+        val skipCount = steps.count { it.status == DiagStatus.SKIP }
         val warnCount = steps.count { it.status == DiagStatus.WARN }
         val failCount = steps.count { it.status == DiagStatus.FAIL }
-        sb.appendLine("--- 2. 一键全量自检结果 (通过=$passCount, 警告=$warnCount, 失败=$failCount) ---")
+        sb.appendLine("--- 2. 一键全量自检结果 (通过=$passCount, 跳过=$skipCount, 警告=$warnCount, 失败=$failCount) ---")
         if (steps.isEmpty()) {
             sb.appendLine("（本次尚未运行一键自检）")
         } else {

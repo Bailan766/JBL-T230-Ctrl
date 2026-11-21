@@ -536,7 +536,7 @@ object FrameCodec {
     fun parseVoicePrompt(frame: Frame): VoicePromptState? {
         if (frame.cmd != 0x93 || frame.payload.size < 2) return null
         return when (frame.payload[0].toInt() and 0xFF) {
-            0x02 -> {
+            0x02, 0x93 -> {
                 if (frame.payload.size < 5) null else VoicePromptState(
                     languageId = frame.payload[1].toInt() and 0xFF,
                     version = "${frame.payload[2].toInt() and 0xFF}.${frame.payload[3].toInt() and 0xFF}.${frame.payload[4].toInt() and 0xFF}",

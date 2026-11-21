@@ -1,5 +1,6 @@
 package com.jblt230.ctrl
 
+import com.jblt230.ctrl.ble.FrameCodec
 import com.jblt230.ctrl.ble.NoiseMode
 import com.jblt230.ctrl.bridge.BridgeContract
 import com.jblt230.ctrl.logging.DiagStatus
@@ -76,9 +77,17 @@ class BridgeContractTest {
             LogEntry("01:40:01.145", "←", "AA 25 06 00 5A 00 5A 00 50", "")
         )
         val text = DiagnosticReportFormatter.format(env, steps, logs)
-        assertTrue(text.contains("通过=1, 警告=0, 失败=1"))
+        assertTrue(text.contains("通过=1, 跳过=0, 警告=0, 失败=1"))
         assertTrue(text.contains("[PASS] (45ms) 三端电量 (0x25)"))
         assertTrue(text.contains("[FAIL] (1200ms) 多包 EQ: 分包超时"))
         assertTrue(text.contains("01:40:01.100 → AA 25 00 // battery_read"))
+    }
+
+    @Test
+    fun parsesTune230Fw370VoicePromptFrame() {
+        val frame = FrameCodec.decode(FrameCodec.parseHex("AA93059300000004"))
+        val vp = frame?.let { FrameCodec.parseVoicePrompt(it) }
+        assertEquals(0, vp?.languageId)
+        assertEquals("0.0.4", vp?.version)
     }
 }

@@ -12,8 +12,8 @@ android {
         applicationId = "com.jblt230.ctrl"
         minSdk = 31
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.5.0"
+        versionCode = 9
+        versionName = "1.5.1"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
 

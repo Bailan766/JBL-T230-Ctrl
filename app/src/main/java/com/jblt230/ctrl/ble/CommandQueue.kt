@@ -42,14 +42,18 @@ class CommandQueue(
 ) {
     private val mutex = Mutex()
 
-    suspend fun read(name: String, match: (Frame) -> Boolean = { true }): Frame? = mutex.withLock {
+    suspend fun read(
+        name: String,
+        timeoutOverrideMs: Long? = null,
+        match: (Frame) -> Boolean = { true }
+    ): Frame? = mutex.withLock {
         val spec = table[name] ?: return@withLock null
         if (!spec.enabled || spec.frameHex == null) {
             log.add("!", "", "$name 未启用（${spec.confidence}）")
             return@withLock null
         }
         guard.assertResolvable(spec.frameHex, spec.requiresResolution)
-        sendAndAwait(spec.frameHex, spec.replyCmd ?: spec.cmd, match)
+        sendAndAwait(spec.frameHex, spec.replyCmd ?: spec.cmd, match, timeoutOverrideMs = timeoutOverrideMs)
     }
 
     /** Static command from commands.json. */
@@ -245,6 +249,8 @@ class CommandQueue(
         if (parsed == null) {
             log.add("!", FrameCodec.hex(payload), "0x43 载荷解析失败（len=${payload.size}）")
         }
+        // Allow BES firmware to settle after AA 04 43 before the next queued GATT frame
+        delay(35L)
         parsed
     }
 
@@ -285,7 +291,8 @@ class CommandQueue(
         frameHex: String,
         expectCmd: Int?,
         match: (Frame) -> Boolean = { true },
-        acceptAckAsWriteReply: Boolean = false
+        acceptAckAsWriteReply: Boolean = false,
+        timeoutOverrideMs: Long? = null
     ): Frame? = coroutineScope {
         val bytes = FrameCodec.parseHex(frameHex)
         val sentCmd = bytes[1].toInt() and 0xFF
@@ -293,7 +300,7 @@ class CommandQueue(
         val startSeq = transport.currentSeq()
 
         val waiter = async {
-            withTimeoutOrNull(timeoutMs) {
+            withTimeoutOrNull(timeoutOverrideMs ?: timeoutMs) {
                 transport.incoming.firstOrNull { inc ->
                     val f = inc.frame ?: return@firstOrNull false
                     if (inc.seq <= startSeq) return@firstOrNull false
