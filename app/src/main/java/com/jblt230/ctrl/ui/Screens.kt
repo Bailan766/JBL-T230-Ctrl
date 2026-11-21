@@ -1,5 +1,7 @@
 package com.jblt230.ctrl.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -62,6 +64,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -75,6 +78,8 @@ import com.jblt230.ctrl.data.AppViewModel
 import com.jblt230.ctrl.data.FeatureStatus
 import com.jblt230.ctrl.data.FeatureUi
 import com.jblt230.ctrl.data.UiState
+import com.jblt230.ctrl.logging.DiagStatus
+import com.jblt230.ctrl.logging.DiagnosticExporter
 import com.jblt230.ctrl.ui.components.EarbudsShowcaseArtwork
 import com.jblt230.ctrl.ui.components.NavTabIcon
 import com.jblt230.ctrl.ui.components.StatusBadge
@@ -285,6 +290,95 @@ private fun PillButton(
 }
 
 @Composable
+private fun DiagnosticActionPanel(vm: AppViewModel, showSteps: Boolean) {
+    val ctx = LocalContext.current
+    val running by vm.diagRunning.collectAsState()
+    val progress by vm.diagProgress.collectAsState()
+    val steps by vm.diagSteps.collectAsState()
+
+    val saveLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        if (uri != null) {
+            val saved = runCatching {
+                ctx.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(vm.buildDiagnosticReport().toByteArray(Charsets.UTF_8))
+                } != null
+            }.getOrDefault(false)
+            vm.setToastMessage(if (saved) "诊断报告已保存到所选目录。" else "保存文件失败，请重试。")
+        }
+    }
+
+    Button(
+        onClick = { vm.runSelfTest() },
+        enabled = !running,
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = JblOrange, contentColor = Color.White),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(if (running) "正在执行一键全量协议自检…" else "一键全量协议测试", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    }
+
+    Spacer(Modifier.height(6.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(
+            onClick = { vm.shareDiagnostics() },
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, Hairline),
+            modifier = Modifier.weight(1f)
+        ) { Text("分享 .txt", fontSize = 11.sp, color = Ink) }
+        OutlinedButton(
+            onClick = { saveLauncher.launch(DiagnosticExporter.buildFileName()) },
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, Hairline),
+            modifier = Modifier.weight(1f)
+        ) { Text("保存到本地", fontSize = 11.sp, color = Ink) }
+        OutlinedButton(
+            onClick = { vm.copyDiagnostics() },
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, Hairline),
+            modifier = Modifier.weight(1f)
+        ) { Text("复制报告", fontSize = 11.sp, color = Ink) }
+    }
+
+    if (progress.isNotBlank()) {
+        Spacer(Modifier.height(6.dp))
+        Text(progress, fontSize = 11.sp, color = TealReady)
+    }
+
+    if (showSteps && steps.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        steps.forEach { s ->
+            val stColor = when (s.status) {
+                DiagStatus.PASS -> TealReady
+                DiagStatus.WARN -> Color(0xFFF5B041)
+                DiagStatus.FAIL -> Color(0xFFFF5252)
+                DiagStatus.SKIP -> Muted
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 2.dp)
+                    .background(Color(0xFF0E141C), RoundedCornerShape(8.dp))
+                    .border(0.6.dp, Hairline, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("[${s.status.tag}]", color = stColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(6.dp))
+                    Text(s.label, color = Ink, fontSize = 11.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    Text("${s.durationMs}ms", color = Muted, fontSize = 10.sp)
+                }
+                Text(s.detail, color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
+                if (s.rawHex.isNotBlank()) {
+                    Text(s.rawHex, color = TealReady.copy(alpha = 0.85f), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SwitchSettingRow(
     title: String,
     subtitle: String? = null,
@@ -488,8 +582,8 @@ private fun DashboardScreen(state: UiState, vm: AppViewModel, onRequestPermissio
 
         // Compact Hardware & Diagnostic Accordion
         SectionCard(
-            title = "硬件详情与协议验证",
-            subtitle = "点击展开设备固件 / S/N 与各协议模块实时校验状态"
+            title = "硬件详情与一键排障",
+            subtitle = "点击一键自检或导出完整蓝牙日志，快速定位失效指令"
         ) {
             val info = state.deviceInfo
             InfoLine("设备名称", info?.deviceName?.ifBlank { "--" } ?: "--")
@@ -503,6 +597,9 @@ private fun DashboardScreen(state: UiState, vm: AppViewModel, onRequestPermissio
             )
             InfoLine("电量数据源", state.batterySource)
 
+            Spacer(Modifier.height(10.dp))
+            DiagnosticActionPanel(vm = vm, showSteps = showDiagnostics)
+
             Spacer(Modifier.height(8.dp))
             Row(
                 modifier = Modifier
@@ -514,8 +611,8 @@ private fun DashboardScreen(state: UiState, vm: AppViewModel, onRequestPermissio
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    if (showDiagnostics) "收起全量协议状态 (${state.features.size} 项)"
-                    else "展开全量协议状态 (${state.features.size} 项)",
+                    if (showDiagnostics) "收起明细与测试结果 (${state.features.size} 项)"
+                    else "展开明细与测试结果 (${state.features.size} 项)",
                     fontSize = 12.sp,
                     color = Ink,
                     fontWeight = FontWeight.Medium,
@@ -1167,6 +1264,10 @@ private fun SettingsScreen(state: UiState, vm: AppViewModel) {
                         modifier = Modifier.weight(1f)
                     ) { Text("同步三端电量", fontSize = 12.sp, color = Ink) }
                 }
+            }
+
+            SectionCard("一键自检与日志导出", subtitle = "自动测试连接/全部只读指令/写回读闭环并导出 .txt 报告") {
+                DiagnosticActionPanel(vm = vm, showSteps = true)
             }
 
             SectionCard("协议安全与说明") {

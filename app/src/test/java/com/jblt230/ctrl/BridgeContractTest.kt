@@ -2,6 +2,10 @@ package com.jblt230.ctrl
 
 import com.jblt230.ctrl.ble.NoiseMode
 import com.jblt230.ctrl.bridge.BridgeContract
+import com.jblt230.ctrl.logging.DiagStatus
+import com.jblt230.ctrl.logging.DiagStep
+import com.jblt230.ctrl.logging.DiagnosticReportFormatter
+import com.jblt230.ctrl.logging.LogEntry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -41,5 +45,40 @@ class BridgeContractTest {
         assertEquals(NoiseMode.AMBIENT_AWARE, BridgeContract.nextQuickNoiseMode(NoiseMode.ANC))
         assertEquals(NoiseMode.OFF, BridgeContract.nextQuickNoiseMode(NoiseMode.AMBIENT_AWARE))
         assertEquals(NoiseMode.OFF, BridgeContract.nextQuickNoiseMode(NoiseMode.TALKTHRU))
+    }
+
+    @Test
+    fun diagnosticFormatterIncludesCountsStepsAndFrames() {
+        val env = DiagnosticReportFormatter.EnvironmentInfo(
+            generatedAt = "2026-11-22 01:40:00",
+            appVersion = "1.5.0 (8)",
+            deviceModel = "realme RMX3888",
+            androidRelease = "16",
+            sdkInt = 36,
+            permissionsGranted = true,
+            overlayGranted = true,
+            takeoverEnabled = true,
+            autoPopupOnConnect = true,
+            keepLinkAlive = false,
+            pairedName = "JBL TUNE230NC TWS",
+            a2dpConnected = true,
+            hfpConnected = true,
+            systemBattery = 90,
+            linkSummary = "Ready (MTU 512)",
+            discoveredServices = "65786365[65786365(p=16)]"
+        )
+        val steps = listOf(
+            DiagStep("bat", "三端电量 (0x25)", DiagStatus.PASS, 45, "L=90%, R=90%, 盒=80%", "AA 25 06 00 5A 00 5A 00 50"),
+            DiagStep("eq", "多包 EQ", DiagStatus.FAIL, 1200, "分包超时")
+        )
+        val logs = listOf(
+            LogEntry("01:40:01.100", "→", "AA 25 00", "battery_read"),
+            LogEntry("01:40:01.145", "←", "AA 25 06 00 5A 00 5A 00 50", "")
+        )
+        val text = DiagnosticReportFormatter.format(env, steps, logs)
+        assertTrue(text.contains("通过=1, 警告=0, 失败=1"))
+        assertTrue(text.contains("[PASS] (45ms) 三端电量 (0x25)"))
+        assertTrue(text.contains("[FAIL] (1200ms) 多包 EQ: 分包超时"))
+        assertTrue(text.contains("01:40:01.100 → AA 25 00 // battery_read"))
     }
 }

@@ -18,7 +18,7 @@ data class LogEntry(
  * In-memory, redacted protocol log. Never persisted, never uploaded.
  * MAC addresses and other identifiers are replaced at insertion time.
  */
-class ProtocolLog(private val capacity: Int = 300) {
+class ProtocolLog(private val capacity: Int = 800) {
 
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
     val entries: StateFlow<List<LogEntry>> = _entries.asStateFlow()

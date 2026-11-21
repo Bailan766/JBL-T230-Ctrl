@@ -66,16 +66,22 @@ class GattTransport(
     private var lastAddress: String = ""
     private var negotiatedMtu: Int = config.mtu
 
+    @Volatile
+    var discoveredServicesSummary: String = ""
+        private set
+
     private val callback = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             try {
                 if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                     Log.i(TAG, "GATT connected, requesting MTU ${config.mtu}")
+                    log.add("i", "", "GATT 已连接，请求 MTU=${config.mtu}")
                     _linkState.value = LinkState.Discovering(lastAddress)
                     g.requestMtu(config.mtu)
                 } else {
                     Log.w(TAG, "GATT disconnected status=$status newState=$newState")
+                    log.add("!", "", "GATT 连接变化 status=$status newState=$newState")
                     _linkState.value = if (status == BluetoothGatt.GATT_SUCCESS) {
                         LinkState.Disconnected
                     } else {
@@ -93,6 +99,7 @@ class GattTransport(
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
             try {
                 Log.i(TAG, "MTU=$mtu status=$status")
+                log.add("i", "", "MTU 协商结果=$mtu status=$status")
                 if (status == BluetoothGatt.GATT_SUCCESS && mtu > 23) {
                     negotiatedMtu = mtu
                 }
@@ -106,9 +113,17 @@ class GattTransport(
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             try {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
+                    log.add("!", "", "onServicesDiscovered 失败 status=$status")
                     _linkState.value = LinkState.Failed("服务发现失败 status=$status")
                     return
                 }
+                discoveredServicesSummary = g.services.joinToString("; ") { svc ->
+                    val chars = svc.characteristics.joinToString(",") { ch ->
+                        "${ch.uuid.toString().take(8)}(p=${ch.properties})"
+                    }
+                    "${svc.uuid.toString().take(8)}[$chars]"
+                }
+                log.add("i", "", "已发现 GATT 服务 ${g.services.size} 个：$discoveredServicesSummary")
                 // Match official GenServiceDiscovery: switch connection interval to high priority
                 runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
 

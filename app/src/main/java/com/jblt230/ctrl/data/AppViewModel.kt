@@ -30,6 +30,10 @@ import com.jblt230.ctrl.bridge.JblBridgeService
 import com.jblt230.ctrl.bridge.TakeoverBridge
 import com.jblt230.ctrl.bridge.TakeoverConfig
 import com.jblt230.ctrl.bridge.TakeoverPrefs
+import com.jblt230.ctrl.logging.DiagStatus
+import com.jblt230.ctrl.logging.DiagStep
+import com.jblt230.ctrl.logging.DiagnosticExporter
+import com.jblt230.ctrl.logging.DiagnosticReportFormatter
 import com.jblt230.ctrl.logging.ProtocolLog
 import com.jblt230.ctrl.protocol.CommandTable
 import com.jblt230.ctrl.protocol.Confidence
@@ -73,6 +77,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _overlayGranted = MutableStateFlow(EarbudsPopupOverlay.canDrawOverlays(app))
     val overlayGranted: StateFlow<Boolean> = _overlayGranted
+
+    private val _diagSteps = MutableStateFlow<List<DiagStep>>(emptyList())
+    val diagSteps: StateFlow<List<DiagStep>> = _diagSteps
+
+    private val _diagRunning = MutableStateFlow(false)
+    val diagRunning: StateFlow<Boolean> = _diagRunning
+
+    private val _diagProgress = MutableStateFlow("")
+    val diagProgress: StateFlow<String> = _diagProgress
 
     private var bridgeRelayRegistered = false
     private val bridgeRelayReceiver = object : BroadcastReceiver() {
@@ -1310,6 +1323,377 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearLog() = log.clear()
+
+    fun buildDiagnosticReport(): String {
+        refreshOverlayPermission()
+        val env = DiagnosticExporter.collectEnv(
+            state = state.value,
+            cfg = _takeoverConfig.value,
+            overlayGranted = _overlayGranted.value,
+            discoveredServices = transport.discoveredServicesSummary
+        )
+        return DiagnosticReportFormatter.format(env, _diagSteps.value, logs.value)
+    }
+
+    fun copyDiagnostics() {
+        val ctx = getApplication<Application>()
+        DiagnosticExporter.copyToClipboard(ctx, buildDiagnosticReport())
+        base.update { it.copy(message = "完整诊断报告与帧日志已复制到剪贴板。") }
+    }
+
+    fun shareDiagnostics() {
+        val ctx = getApplication<Application>()
+        val ok = DiagnosticExporter.shareAsFile(ctx, buildDiagnosticReport())
+        base.update {
+            it.copy(
+                message = if (ok) "正在拉起系统分享菜单导出 .txt 日志文件…" else "分享导出失败，请尝试复制或保存文件。"
+            )
+        }
+    }
+
+    fun setToastMessage(msg: String) {
+        base.update { it.copy(message = msg) }
+    }
+
+    /**
+     * Runs a comprehensive, non-destructive self-test across permissions, BLE GATT handshake,
+     * every safe readback opcode, and a silent same-mode ANC roundtrip verification.
+     */
+    fun runSelfTest() {
+        if (_diagRunning.value) return
+        _diagRunning.value = true
+        _diagSteps.value = emptyList()
+        _diagProgress.value = "正在检查权限与蓝牙设备..."
+        log.add("i", "", "开始一键全量协议自检 (v${com.jblt230.ctrl.BuildConfig.VERSION_NAME})")
+
+        viewModelScope.launch {
+            try {
+                fun appendStep(step: DiagStep) {
+                    _diagSteps.value = _diagSteps.value + step
+                }
+
+                // 1. Permissions & paired device check
+                refreshOverlayPermission()
+                val adapter = BluetoothAdapter.getDefaultAdapter()
+                val classic = runCatching { scanner.findClassicDevice(adapter, null) }.getOrNull()
+                if (!state.value.permissionsGranted) {
+                    appendStep(
+                        DiagStep(
+                            key = "permissions",
+                            label = "蓝牙权限与目标耳机",
+                            status = DiagStatus.FAIL,
+                            detail = "缺少 BLUETOOTH_CONNECT / SCAN 权限"
+                        )
+                    )
+                    _diagProgress.value = "自检中止：缺少蓝牙权限"
+                    return@launch
+                }
+                if (classic == null) {
+                    appendStep(
+                        DiagStep(
+                            key = "paired",
+                            label = "蓝牙权限与目标耳机",
+                            status = DiagStatus.FAIL,
+                            detail = "未在系统已配对列表找到 JBL TUNE230 设备"
+                        )
+                    )
+                    _diagProgress.value = "自检中止：未发现已配对耳机"
+                    return@launch
+                }
+                system.start(classic.address)
+                appendStep(
+                    DiagStep(
+                        key = "paired",
+                        label = "系统蓝牙与权限基线",
+                        status = if (_overlayGranted.value) DiagStatus.PASS else DiagStatus.WARN,
+                        detail = "已配对 ${classic.name ?: "JBL"} · 悬浮窗=${if (_overlayGranted.value) "已授权" else "未授权"}"
+                    )
+                )
+
+                // 2. Ensure GATT ready
+                if (!state.value.controlReady) {
+                    _diagProgress.value = "正在连接 BLE GATT 控制链路..."
+                    TakeoverBridge.foregroundLinkActive.set(true)
+                    val t0 = System.currentTimeMillis()
+                    val le = scanner.scanForLeSide(adapter)
+                    var ready = if (le != null) connectAndWait(le) else null
+                    if (ready == null) {
+                        transport.release()
+                        ready = connectAndWait(classic)
+                    }
+                    val dt = System.currentTimeMillis() - t0
+                    if (ready == null) {
+                        TakeoverBridge.foregroundLinkActive.set(false)
+                        val failReason = (state.value.link as? LinkState.Failed)?.reason ?: "连接/发现超时"
+                        appendStep(
+                            DiagStep(
+                                key = "gatt_link",
+                                label = "BLE GATT 控制建链",
+                                status = DiagStatus.FAIL,
+                                durationMs = dt,
+                                detail = "$failReason | 服务=${transport.discoveredServicesSummary.ifBlank { "无" }}"
+                            )
+                        )
+                        _diagProgress.value = "自检中止：$failReason（可导出日志排查）"
+                        return@launch
+                    }
+                    appendStep(
+                        DiagStep(
+                            key = "gatt_link",
+                            label = "BLE GATT 控制建链",
+                            status = DiagStatus.PASS,
+                            durationMs = dt,
+                            detail = "MTU=${ready.mtu}, via=${if (le != null) "LE侧" else "Classic回退"}"
+                        )
+                    )
+                } else {
+                    appendStep(
+                        DiagStep(
+                            key = "gatt_link",
+                            label = "BLE GATT 控制建链",
+                            status = DiagStatus.PASS,
+                            detail = "复用当前在线链路"
+                        )
+                    )
+                }
+
+                // 3. Table-driven safe read probes
+                data class ReadProbe(
+                    val key: String,
+                    val label: String,
+                    val cmdName: String,
+                    val filter: (Frame) -> Boolean = { true },
+                    val summarize: (Frame) -> String?
+                )
+
+                val probes = listOf(
+                    ReadProbe("device_info", "设备信息 (0x21)", "device_info_read") { f ->
+                        FrameCodec.parseDeviceInfo(f)?.let { "FW=${it.firmwareVersion}, PID=${it.productIdHex}, TWS=${it.twsConnected}" }
+                    },
+                    ReadProbe("battery", "三端电量 (0x25)", "battery_read") { f ->
+                        FrameCodec.parseBattery(f)?.let { "L=${it.left}%, R=${it.right}%, 盒=${it.case}%" }
+                    },
+                    ReadProbe(
+                        "all_status",
+                        "全量状态合集 (0x30)",
+                        "status_read_all",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x30 }
+                    ) { f ->
+                        FrameCodec.parseAllStatus(f)?.let { "Noise=${it.noiseMode}, EQ=0x%02X".format(it.eqPresetByte) }
+                    },
+                    ReadProbe(
+                        "anc",
+                        "降噪状态 (0x12)",
+                        "anc_read",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x12 }
+                    ) { f ->
+                        FrameCodec.parseNoiseMode(f)?.let { "模式=${it.label}" }
+                    },
+                    ReadProbe(
+                        "adv_anc",
+                        "环境感知等级 (0x22)",
+                        "advance_anc_read",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x22 }
+                    ) { f ->
+                        FrameCodec.parseAdvanceAnc(f)?.let { "等级=${it.ambientAwareLevel}/7" }
+                    },
+                    ReadProbe(
+                        "eq_preset",
+                        "EQ 预设状态 (0x34)",
+                        "eq_preset_status_read",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x34 }
+                    ) { f ->
+                        FrameCodec.parseEqPresetStatus(f)?.let { "槽位=0x%02X".format(it) }
+                    },
+                    ReadProbe("gesture", "触控手势 (0x77)", "gesture_read") { f ->
+                        FrameCodec.parseGestures(f)?.let { "左=${it.leftGroup.label}, 右=${it.rightGroup.label}" }
+                    },
+                    ReadProbe(
+                        "in_ear",
+                        "入耳检测 (0x27)",
+                        "in_ear_read",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x27 }
+                    ) { f ->
+                        FrameCodec.parseInEarStatus(f)?.let { "L=${it.leftInEar}, R=${it.rightInEar}" }
+                    },
+                    ReadProbe(
+                        "auto_play",
+                        "自动播放暂停 (0x35)",
+                        "auto_play_pause_read",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x35 }
+                    ) { f ->
+                        FrameCodec.parseAutoPlayPauseStatus(f)?.let { "开启=$it" }
+                    },
+                    ReadProbe(
+                        "voice_prompt",
+                        "语音提示偏好 (0x93)",
+                        "voice_prompt_read",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x93 }
+                    ) { f ->
+                        FrameCodec.parseVoicePrompt(f)?.let { "仅提示音=${it.toneOnly}, v${it.version ?: "--"}" }
+                    },
+                    ReadProbe(
+                        "standby",
+                        "待机保留ANC (0x96)",
+                        "standby_read",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x96 }
+                    ) { f ->
+                        FrameCodec.parseStandbyModeKeepAnc(f)?.let { "保留=$it" }
+                    },
+                    ReadProbe(
+                        "auto_off",
+                        "自动关机 (0x33)",
+                        "auto_poweroff_read",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x33 }
+                    ) { f ->
+                        FrameCodec.parseAutoOffStatus(f)?.let { (en, min) -> "开启=$en, ${min}m" }
+                    },
+                    ReadProbe(
+                        "tips_type",
+                        "耳塞尺寸 (0x9C)",
+                        "tips_type_read",
+                        filter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x9C }
+                    ) { f ->
+                        FrameCodec.parseTipsType(f)?.let { "type=$it" }
+                    },
+                    ReadProbe("serial", "序列号 (S/N)", "serial_number_read") { f ->
+                        FrameCodec.parseSerialNumber(f)
+                    },
+                    ReadProbe("case_ver", "充电盒版本", "case_version_read") { f ->
+                        FrameCodec.parseCaseVersion(f)
+                    }
+                )
+
+                var detectedNoise: NoiseMode? = null
+                for (probe in probes) {
+                    _diagProgress.value = "测试中：${probe.label}..."
+                    val t0 = System.currentTimeMillis()
+                    val frame = runCatching { queue.read(probe.cmdName, probe.filter) }.getOrNull()
+                    val dt = System.currentTimeMillis() - t0
+                    if (frame == null) {
+                        appendStep(
+                            DiagStep(
+                                key = probe.key,
+                                label = probe.label,
+                                status = DiagStatus.FAIL,
+                                durationMs = dt,
+                                detail = "超时或未收到匹配回复"
+                            )
+                        )
+                        continue
+                    }
+                    if (probe.key == "anc") {
+                        detectedNoise = FrameCodec.parseNoiseMode(frame)
+                    }
+                    val parsed = probe.summarize(frame)
+                    appendStep(
+                        DiagStep(
+                            key = probe.key,
+                            label = probe.label,
+                            status = if (parsed != null) DiagStatus.PASS else DiagStatus.WARN,
+                            durationMs = dt,
+                            detail = parsed ?: "收到回包但字段未匹配已知格式",
+                            rawHex = frame.hex
+                        )
+                    )
+                }
+
+                // 4. Multi-part BES Custom EQ Read (0x42/0x43)
+                _diagProgress.value = "测试中：多包 EQ 读取 (0x42/0x43)..."
+                val eqT0 = System.currentTimeMillis()
+                val customEq = runCatching { queue.readCustomEq(EqCodec.CAT_GRAPHIC_EQ) }.getOrNull()
+                val eqDt = System.currentTimeMillis() - eqT0
+                appendStep(
+                    DiagStep(
+                        key = "eq_custom",
+                        label = "多包 EQ 回读 (0x42/0x43)",
+                        status = if (customEq != null) DiagStatus.PASS else DiagStatus.WARN,
+                        durationMs = eqDt,
+                        detail = if (customEq != null) {
+                            "slot=0x%02X, gains=%s".format(customEq.presetIndex, customEq.gains.joinToString(","))
+                        } else {
+                            "分包回读超时或当前处于预设模式"
+                        }
+                    )
+                )
+
+                // 5. Non-destructive bidirectional write + readback verification using current noise mode
+                val safeTargetNoise = detectedNoise ?: state.value.noiseMode
+                val writeCmdName = when (safeTargetNoise) {
+                    NoiseMode.OFF -> "noise_all_off"
+                    NoiseMode.ANC -> "anc_on"
+                    NoiseMode.AMBIENT_AWARE -> "ambient_aware_on"
+                    NoiseMode.TALKTHRU -> "talkthru_on"
+                }
+                _diagProgress.value = "测试中：降噪双向写回读闭环 (${safeTargetNoise.label})..."
+                val wT0 = System.currentTimeMillis()
+                val writeRes = runCatching {
+                    queue.writeAndVerify(
+                        name = writeCmdName,
+                        readFilter = { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x12 }
+                    ) { FrameCodec.parseNoiseMode(it) == safeTargetNoise }
+                }.getOrElse { WriteResult.Unverified(it.message ?: "异常") }
+                val wDt = System.currentTimeMillis() - wT0
+                appendStep(
+                    when (writeRes) {
+                        is WriteResult.Verified -> DiagStep(
+                            key = "noise_roundtrip",
+                            label = "双向写入+回读闭环",
+                            status = DiagStatus.PASS,
+                            durationMs = wDt,
+                            detail = "无感写入 ${safeTargetNoise.label} 并回读一致",
+                            rawHex = writeRes.readback.hex
+                        )
+                        is WriteResult.Unverified -> DiagStep(
+                            key = "noise_roundtrip",
+                            label = "双向写入+回读闭环",
+                            status = DiagStatus.FAIL,
+                            durationMs = wDt,
+                            detail = writeRes.reason
+                        )
+                        is WriteResult.Refused -> DiagStep(
+                            key = "noise_roundtrip",
+                            label = "双向写入+回读闭环",
+                            status = DiagStatus.WARN,
+                            durationMs = wDt,
+                            detail = writeRes.reason
+                        )
+                    }
+                )
+
+                // 6. CommandGuard safety check (in-memory only, never sent over BLE)
+                val guardBlocked = try {
+                    guard.assertAllowed(byteArrayOf(0xAA.toByte(), 0xF0.toByte(), 0x00))
+                    false
+                } catch (_: SecurityException) {
+                    true
+                }
+                appendStep(
+                    DiagStep(
+                        key = "guard_check",
+                        label = "黑名单拦截校验 (CommandGuard)",
+                        status = if (guardBlocked) DiagStatus.PASS else DiagStatus.FAIL,
+                        detail = if (guardBlocked) "危险操作码 0xF0 已在发送前被拒绝" else "未拦截黑名单操作码"
+                    )
+                )
+
+                refreshAll()
+                val p = _diagSteps.value.count { it.status == DiagStatus.PASS }
+                val w = _diagSteps.value.count { it.status == DiagStatus.WARN }
+                val f = _diagSteps.value.count { it.status == DiagStatus.FAIL }
+                val summary = "自检完成：通过 $p 项 · 警告 $w 项 · 失败 $f 项（点击导出日志发给我即可精准排障）"
+                _diagProgress.value = summary
+                base.update { it.copy(message = summary) }
+            } catch (e: Throwable) {
+                val msg = "自检异常：${e.message ?: e.javaClass.simpleName}"
+                _diagSteps.value = _diagSteps.value + DiagStep("error", "异常中断", DiagStatus.FAIL, detail = msg)
+                _diagProgress.value = msg
+                base.update { it.copy(message = msg) }
+            } finally {
+                _diagRunning.value = false
+            }
+        }
+    }
 
     private fun List<FeatureUi>.withStatus(
         key: String,
