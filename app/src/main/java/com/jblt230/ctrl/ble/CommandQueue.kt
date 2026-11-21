@@ -258,7 +258,7 @@ class CommandQueue(
             log.add("!", FrameCodec.hex(payload), "0x43 载荷解析失败（len=${payload.size}）")
         }
         // Allow BES firmware to settle after AA 04 43 before the next queued GATT frame
-        delay(160L)
+        delay(240L)
         parsed
     }
 

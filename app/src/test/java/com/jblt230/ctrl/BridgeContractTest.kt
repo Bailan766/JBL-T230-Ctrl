@@ -131,13 +131,17 @@ class BridgeContractTest {
     @Test
     fun colorOsSpoofNoiseEqAndProductIdHelpersRoundTrip() {
         assertEquals(0, BridgeContract.noiseModeToColorOsIndex(NoiseMode.OFF))
-        assertEquals(1, BridgeContract.noiseModeToColorOsIndex(NoiseMode.AMBIENT_AWARE))
-        assertEquals(1, BridgeContract.noiseModeToColorOsIndex(NoiseMode.TALKTHRU))
-        assertEquals(2, BridgeContract.noiseModeToColorOsIndex(NoiseMode.ANC))
+        assertEquals(1, BridgeContract.noiseModeToColorOsIndex(NoiseMode.ANC))
+        assertEquals(8, BridgeContract.noiseModeToColorOsIndex(NoiseMode.AMBIENT_AWARE))
+        assertEquals(9, BridgeContract.noiseModeToColorOsIndex(NoiseMode.TALKTHRU))
 
         assertEquals(NoiseMode.OFF, BridgeContract.colorOsIndexToNoiseMode(0))
-        assertEquals(NoiseMode.AMBIENT_AWARE, BridgeContract.colorOsIndexToNoiseMode(1))
-        assertEquals(NoiseMode.ANC, BridgeContract.colorOsIndexToNoiseMode(2))
+        assertEquals(NoiseMode.ANC, BridgeContract.colorOsIndexToNoiseMode(1))
+        assertEquals(NoiseMode.AMBIENT_AWARE, BridgeContract.colorOsIndexToNoiseMode(2))
+        assertEquals(NoiseMode.OFF, BridgeContract.colorOsIndexToNoiseMode(3))
+        assertEquals(NoiseMode.ANC, BridgeContract.colorOsIndexToNoiseMode(5))
+        assertEquals(NoiseMode.AMBIENT_AWARE, BridgeContract.colorOsIndexToNoiseMode(8))
+        assertEquals(NoiseMode.TALKTHRU, BridgeContract.colorOsIndexToNoiseMode(9))
 
         assertEquals(0x060414, BridgeContract.parseProductIdInt("060414"))
         assertEquals("060814", BridgeContract.formatProductIdHex(0x060814))
@@ -146,6 +150,15 @@ class BridgeContractTest {
         for (p in listOf("off", "jazz", "vocal", "bass", "club", "studio", "extreme_bass", "custom")) {
             assertEquals(p, BridgeContract.colorOsTypeToEqPreset(BridgeContract.eqPresetToColorOsType(p)))
         }
+    }
+
+    @Test
+    fun cleanDisplayNameStripsLeSuffixAndNormalizesModel() {
+        assertEquals("JBL Tune 230NC", BridgeContract.cleanDisplayName("JBL TUNE230NC TWS-LE"))
+        assertEquals("JBL Tune 230NC", BridgeContract.cleanDisplayName("JBL TUNE230NC TWS"))
+        assertEquals("JBL Tune 230NC", BridgeContract.cleanDisplayName(""))
+        assertEquals("JBL Tune 230NC", BridgeContract.cleanDisplayName(null))
+        assertEquals("OtherBuds", BridgeContract.cleanDisplayName("OtherBuds-LE"))
     }
 
     @Test
@@ -190,6 +203,26 @@ class BridgeContractTest {
                 pidHex = "063C10",
                 modelName = "OPPO Enco X2",
                 productType = "T1",
+                color = 0
+            )
+        )
+
+        val detailCmd = RootMelodyWake.buildDetailAmCommand(
+            mac = "aa:bb:cc:11:22:33",
+            pidHex = "063c10",
+            modelName = "OPPO Enco X2|id",
+            color = 0
+        )
+        assertNotNull(detailCmd)
+        assertTrue(detailCmd!!.contains("com.oplus.melody/com.oplus.melody.ui.component.detail.DetailMainActivity"))
+        assertTrue(detailCmd.contains("--es device_mac_info AA:BB:CC:11:22:33"))
+        assertTrue(detailCmd.contains("--es product_id 063C10"))
+        assertFalse(detailCmd.contains("|"))
+        assertNull(
+            RootMelodyWake.buildDetailAmCommand(
+                mac = "bad-mac",
+                pidHex = "063C10",
+                modelName = "OPPO Enco X2",
                 color = 0
             )
         )

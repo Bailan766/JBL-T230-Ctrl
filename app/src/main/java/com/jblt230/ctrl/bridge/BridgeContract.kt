@@ -59,6 +59,7 @@ object BridgeContract {
     const val EXTRA_CASE_CHARGING = "case_charging"
     const val EXTRA_NOISE_INDEX = "noise_index"
     const val EXTRA_EQ_TYPE = "eq_type"
+    const val EXTRA_FW_VERSION = "fw_version"
     const val EXTRA_TRIGGER_MELODY_POPUP = "trigger_melody_popup"
     const val EXTRA_TRIGGER_MELODY_CAPSULE = "trigger_melody_capsule"
 
@@ -88,6 +89,13 @@ object BridgeContract {
         if (name.isNullOrBlank()) return false
         val upper = name.uppercase()
         return upper.contains("TUNE230") || upper.contains("TUNE 230")
+    }
+
+    /** Strips noisy `-LE` / `TWS-LE` suffixes for native UI presentation. */
+    fun cleanDisplayName(rawName: String?): String {
+        if (rawName.isNullOrBlank()) return "JBL Tune 230NC"
+        if (isTargetJblName(rawName)) return "JBL Tune 230NC"
+        return rawName.trim().removeSuffix("-LE").trim().ifBlank { "JBL Tune 230NC" }
     }
 
     fun formatBatteryText(level: Int?, charging: Boolean = false): String {
@@ -148,19 +156,22 @@ object BridgeContract {
     }
 
     /**
-     * Maps Harman [NoiseMode] to ColorOS Melody NoiseReduction index:
-     * 0 = Off (关闭), 1 = Transparency (通透), 2 = Noise Cancellation (降噪).
+     * Maps Harman [NoiseMode] to ColorOS Melody NoiseReduction protocolIndex:
+     * 0 = Off (关闭), 1 = ANC (降噪), 8 = Transparency (通透/环境感知), 9 = TalkThru (人声增强).
      */
     fun noiseModeToColorOsIndex(mode: NoiseMode): Int = when (mode) {
         NoiseMode.OFF -> 0
-        NoiseMode.AMBIENT_AWARE, NoiseMode.TALKTHRU -> 1
-        NoiseMode.ANC -> 2
+        NoiseMode.ANC -> 1
+        NoiseMode.AMBIENT_AWARE -> 8
+        NoiseMode.TALKTHRU -> 9
     }
 
-    /** Reverse mapping from ColorOS Melody NoiseReduction index to JBL [NoiseMode]. */
+    /** Reverse mapping from ColorOS Melody NoiseReduction protocolIndex to JBL [NoiseMode]. */
     fun colorOsIndexToNoiseMode(index: Int): NoiseMode = when (index) {
-        1 -> NoiseMode.AMBIENT_AWARE
-        2, 3, 4 -> NoiseMode.ANC
+        0, 3 -> NoiseMode.OFF
+        1, 4, 5, 6, 7 -> NoiseMode.ANC
+        2, 8 -> NoiseMode.AMBIENT_AWARE
+        9 -> NoiseMode.TALKTHRU
         else -> NoiseMode.OFF
     }
 

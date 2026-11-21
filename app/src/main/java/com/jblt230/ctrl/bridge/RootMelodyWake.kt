@@ -58,6 +58,22 @@ object RootMelodyWake {
             "--es route_value2 false"
     }
 
+    fun buildDetailAmCommand(
+        mac: String,
+        pidHex: String,
+        modelName: String,
+        color: Int
+    ): String? {
+        val safeMac = sanitizeMac(mac) ?: return null
+        val safePid = sanitizePidHex(pidHex) ?: return null
+        val safeModel = sanitizeToken(modelName, "OPPO Enco X2")
+        return "am start -n com.oplus.melody/com.oplus.melody.ui.component.detail.DetailMainActivity " +
+            "--es device_mac_info $safeMac " +
+            "--es product_id $safePid " +
+            "--es device_name '$safeModel' " +
+            "--es product_color $color"
+    }
+
     fun wakeMelodyMainProcess(): RootExecResult =
         execSu(
             "am startservice -n com.oplus.melody/com.oplus.melody.alive.service.MelodyAliveService",
@@ -79,6 +95,17 @@ object RootMelodyWake {
         color: Int
     ): RootExecResult {
         val cmd = buildDiscoveryAmCommand(mac, pidHex, modelName, productType, color)
+            ?: return RootExecResult(ok = false, exitCode = -2, output = "无效的耳机 MAC 或 PID")
+        return execSu(cmd, timeoutMs = 3_000L)
+    }
+
+    fun launchDetailActivityAsRoot(
+        mac: String,
+        pidHex: String,
+        modelName: String,
+        color: Int
+    ): RootExecResult {
+        val cmd = buildDetailAmCommand(mac, pidHex, modelName, color)
             ?: return RootExecResult(ok = false, exitCode = -2, output = "无效的耳机 MAC 或 PID")
         return execSu(cmd, timeoutMs = 3_000L)
     }

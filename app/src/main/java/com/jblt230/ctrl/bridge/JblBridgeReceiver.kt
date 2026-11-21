@@ -66,9 +66,10 @@ class JblBridgeReceiver : BroadcastReceiver() {
                 ) {
                     return
                 }
-                Log.i(TAG, "JBL Tune 230NC disconnected ($name), dismissing Fluid Cloud & overlay")
+                Log.i(TAG, "JBL Tune 230NC disconnected ($name), stopping bridge & dismissing Fluid Cloud")
                 FluidCloudNotifier.dismiss(context)
                 EarbudsPopupOverlay.dismiss()
+                runCatching { context.stopService(Intent(context, JblBridgeService::class.java)) }
                 JblBatteryWidgetProvider.updateAll(context)
             }
 

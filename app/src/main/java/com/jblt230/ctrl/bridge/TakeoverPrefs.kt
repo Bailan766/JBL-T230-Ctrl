@@ -7,15 +7,17 @@ data class TakeoverConfig(
     val useFluidCloud: Boolean = true,
     val autoPopupOnConnect: Boolean = false,
     val autoDismissPopup: Boolean = true,
-    val keepLinkAlive: Boolean = false,
+    val keepLinkAlive: Boolean = true,
     val melodySpoofEnabled: Boolean = true,
     val spoofModelName: String = "OPPO Enco X2",
     val melodyAutoPopup: Boolean = true,
-    val melodyAutoCapsule: Boolean = true
+    val melodyAutoCapsule: Boolean = true,
+    val useDynamicColor: Boolean = false
 )
 
 data class CachedDeviceSnapshot(
     val mac: String = "",
+    val leMac: String = "",
     val leftBattery: Int? = null,
     val rightBattery: Int? = null,
     val caseBattery: Int? = null,
@@ -40,11 +42,12 @@ class TakeoverPrefs(context: Context) {
         useFluidCloud = prefs.getBoolean(KEY_FLUID_CLOUD, true),
         autoPopupOnConnect = prefs.getBoolean(KEY_AUTO_POPUP, false),
         autoDismissPopup = prefs.getBoolean(KEY_AUTO_DISMISS, true),
-        keepLinkAlive = prefs.getBoolean(KEY_KEEP_ALIVE, false),
+        keepLinkAlive = prefs.getBoolean(KEY_KEEP_ALIVE, true),
         melodySpoofEnabled = prefs.getBoolean(KEY_MELODY_SPOOF, true),
         spoofModelName = prefs.getString(KEY_SPOOF_MODEL, "OPPO Enco X2") ?: "OPPO Enco X2",
         melodyAutoPopup = prefs.getBoolean(KEY_MELODY_POPUP, true),
-        melodyAutoCapsule = prefs.getBoolean(KEY_MELODY_CAPSULE, true)
+        melodyAutoCapsule = prefs.getBoolean(KEY_MELODY_CAPSULE, true),
+        useDynamicColor = prefs.getBoolean(KEY_DYNAMIC_COLOR, false)
     )
 
     fun saveConfig(cfg: TakeoverConfig) {
@@ -58,11 +61,13 @@ class TakeoverPrefs(context: Context) {
             .putString(KEY_SPOOF_MODEL, cfg.spoofModelName)
             .putBoolean(KEY_MELODY_POPUP, cfg.melodyAutoPopup)
             .putBoolean(KEY_MELODY_CAPSULE, cfg.melodyAutoCapsule)
+            .putBoolean(KEY_DYNAMIC_COLOR, cfg.useDynamicColor)
             .apply()
     }
 
     fun loadSnapshot(): CachedDeviceSnapshot = CachedDeviceSnapshot(
         mac = prefs.getString(KEY_MAC, "") ?: "",
+        leMac = prefs.getString(KEY_LE_MAC, "") ?: "",
         leftBattery = prefs.getInt(KEY_LEFT_BAT, -1).takeIf { it in 0..100 },
         rightBattery = prefs.getInt(KEY_RIGHT_BAT, -1).takeIf { it in 0..100 },
         caseBattery = prefs.getInt(KEY_CASE_BAT, -1).takeIf { it in 0..100 },
@@ -77,6 +82,7 @@ class TakeoverPrefs(context: Context) {
     fun saveSnapshot(snap: CachedDeviceSnapshot) {
         prefs.edit()
             .putString(KEY_MAC, snap.mac)
+            .putString(KEY_LE_MAC, snap.leMac)
             .putInt(KEY_LEFT_BAT, snap.leftBattery ?: -1)
             .putInt(KEY_RIGHT_BAT, snap.rightBattery ?: -1)
             .putInt(KEY_CASE_BAT, snap.caseBattery ?: -1)
@@ -94,13 +100,15 @@ class TakeoverPrefs(context: Context) {
         private const val KEY_FLUID_CLOUD = "use_fluid_cloud"
         private const val KEY_AUTO_POPUP = "auto_popup_v2"
         private const val KEY_AUTO_DISMISS = "auto_dismiss"
-        private const val KEY_KEEP_ALIVE = "keep_alive"
+        private const val KEY_KEEP_ALIVE = "keep_alive_v2"
         private const val KEY_MELODY_SPOOF = "melody_spoof"
         private const val KEY_SPOOF_MODEL = "spoof_model"
         private const val KEY_MELODY_POPUP = "melody_popup"
         private const val KEY_MELODY_CAPSULE = "melody_capsule"
+        private const val KEY_DYNAMIC_COLOR = "ui_dynamic_color"
 
         private const val KEY_MAC = "snap_mac"
+        private const val KEY_LE_MAC = "snap_le_mac"
         private const val KEY_LEFT_BAT = "snap_left_bat"
         private const val KEY_RIGHT_BAT = "snap_right_bat"
         private const val KEY_CASE_BAT = "snap_case_bat"

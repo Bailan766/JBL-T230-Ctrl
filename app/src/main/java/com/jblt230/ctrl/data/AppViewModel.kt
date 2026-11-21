@@ -230,11 +230,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 system.start(classic.address)
                 TakeoverBridge.foregroundLinkActive.set(true)
+                runCatching {
+                    val appCtx = getApplication<Application>()
+                    appCtx.stopService(Intent(appCtx, JblBridgeService::class.java))
+                }
+                delay(250L)
 
                 var ready: LinkState.Ready? = null
-                base.update { it.copy(message = "扫描 JBL TUNE230NC TWS-LE 控制侧...") }
-                val le = scanner.scanForLeSide(adapter)
-                if (le != null) ready = connectAndWait(le)
+                val cachedLeMac = takeoverPrefs.loadSnapshot().leMac
+                if (cachedLeMac.isNotBlank()) {
+                    base.update { it.copy(message = "快速重连已知 JBL-LE 控制通道...") }
+                    val cachedDev = runCatching { adapter.getRemoteDevice(cachedLeMac) }.getOrNull()
+                    if (cachedDev != null) {
+                        ready = connectAndWait(cachedDev)
+                    }
+                    if (ready == null) {
+                        transport.release()
+                        val snap = takeoverPrefs.loadSnapshot()
+                        takeoverPrefs.saveSnapshot(snap.copy(leMac = ""))
+                    }
+                }
+                if (ready == null) {
+                    base.update { it.copy(message = "扫描 JBL TUNE230NC TWS-LE 控制侧...") }
+                    val le = scanner.scanForLeSide(adapter)
+                    if (le != null) {
+                        val snap = takeoverPrefs.loadSnapshot()
+                        takeoverPrefs.saveSnapshot(snap.copy(mac = classic.address, leMac = le.address))
+                        ready = connectAndWait(le)
+                    }
+                }
                 if (ready == null) {
                     transport.release()
                     base.update { it.copy(message = "LE 扫描未命中，回退直连 classic 地址...") }
@@ -315,8 +339,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun readDeviceInfoAndHandshake() {
         val infoFrame = queue.read("device_info_read")
         val info = infoFrame?.let { FrameCodec.parseDeviceInfo(it) }
-        // Fire sync_app_status with short timeout; FW 3.7.0 does not send a dedicated 0x00 ACK
-        queue.read("sync_app_status", timeoutOverrideMs = 200L)
         if (info != null) {
             base.update {
                 it.copy(
@@ -397,26 +419,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         val mode = modeFrame?.let { FrameCodec.parseNoiseMode(it) }
 
-        val subFrame = queue.read("anc_submode_read", timeoutOverrideMs = 350L) { f ->
-            f.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x02
-        }
-        val subMode = subFrame?.let { FrameCodec.parseAncSubMode(it) }
-
-        val advFrame = queue.read("advance_anc_read", timeoutOverrideMs = 350L) { f ->
-            f.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x22
-        }
-        val adv = advFrame?.let { FrameCodec.parseAdvanceAnc(it) }
-
         base.update { s ->
             val resolvedMode = mode ?: s.noiseMode
             val status = if (mode != null) FeatureStatus.READ_ONLY else s.noiseStatus
             s.copy(
                 noiseMode = resolvedMode,
-                ancSubMode = subMode ?: s.ancSubMode,
-                ambientAwareLevel = adv?.ambientAwareLevel?.coerceIn(1, 7) ?: s.ambientAwareLevel,
                 noiseStatus = status,
                 noiseDetail = if (mode != null)
-                    "已从耳机读取：$resolvedMode（环境感知等级 ${adv?.ambientAwareLevel ?: s.ambientAwareLevel}）"
+                    "已从耳机读取：$resolvedMode"
                 else "0x91 未应答；可从全状态回读",
                 features = s.features.withStatus("anc", status, "模式可读；写入后回读一致标为真实", mode != null)
             )
@@ -424,6 +434,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setNoiseMode(mode: NoiseMode) {
+        val prevMode = base.value.noiseMode
+        val prevStatus = base.value.noiseStatus
+        val prevDetail = base.value.noiseDetail
+        // Optimistic immediate UI update for crisp responsiveness
+        base.update {
+            it.copy(
+                noiseMode = mode,
+                noiseDetail = "正在下发：${mode.label}..."
+            )
+        }
         val commandName = when (mode) {
             NoiseMode.OFF -> "noise_all_off"
             NoiseMode.ANC -> "anc_on"
@@ -452,13 +472,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         noiseMode = mode,
                         noiseStatus = FeatureStatus.REAL,
                         noiseDetail = "下发后回读一致：${result.readback.hex}",
-                        message = "降噪/环境音模式已生效并回读确认。",
+                        message = "降噪/环境音已切换为 ${mode.label}。",
                         features = it.features.withStatus("anc", FeatureStatus.REAL, "写入 + 回读一致", true)
                     )
                 }
             } else {
                 // Re-read in-ear & TWS status so we can give an accurate physical reason if rejected
-                val inEar = queue.read("in_ear_read") {
+                val inEar = queue.read("in_ear_read", timeoutOverrideMs = 250L) {
                     it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x41
                 }?.let { FrameCodec.parseInEarStatus(it) }
                 readAllStatus()
@@ -478,9 +498,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val fullDetail = if (hardwareHint.isNotBlank()) "$reason（固件拦截：$hardwareHint 请戴稳双耳再试）" else reason
                 base.update {
                     it.copy(
+                        noiseMode = prevMode,
+                        noiseStatus = if (result is WriteResult.Refused) FeatureStatus.DEGRADED else prevStatus,
                         inEar = inEar ?: it.inEar,
-                        noiseStatus = if (result is WriteResult.Refused) FeatureStatus.DEGRADED else FeatureStatus.UNVERIFIED,
-                        noiseDetail = fullDetail,
+                        noiseDetail = fullDetail.ifBlank { prevDetail },
                         message = "模式未确认生效：$fullDetail"
                     )
                 }
@@ -614,6 +635,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setEqPreset(preset: EqPreset) {
+        val prevPresetId = base.value.eqPresetId
+        val prevGains = base.value.eqGains
+        val prevByte = base.value.activePresetByte
+        val prevStatus = base.value.eqStatus
         eqStore.save(preset.id, preset.gains)
         if (!state.value.controlReady) {
             base.update {
@@ -627,8 +652,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
+        // Optimistic immediate selection + smooth curve preview
+        val presetByte = EqCodec.presetIdToByte(preset.id) ?: preset.cmdIndex
+        base.update {
+            it.copy(
+                eqPresetId = preset.id,
+                activePresetByte = presetByte,
+                eqGains = preset.gains,
+                eqDetail = "正在应用 EQ 预设「${preset.label}」..."
+            )
+        }
         viewModelScope.launch {
-            val presetByte = EqCodec.presetIdToByte(preset.id) ?: preset.cmdIndex
             val presetFrame = EqCodec.buildSetEqPresetFrame(presetByte)
             val presetResult = queue.writeFrameAndVerify(
                 frameHex = FrameCodec.hex(presetFrame),
@@ -654,22 +688,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
             base.update {
                 val verified = curveResult.verified || presetResult is WriteResult.Verified || a2Verified
-                val newStatus = if (verified) FeatureStatus.REAL else FeatureStatus.UNVERIFIED
+                val newStatus = if (verified) FeatureStatus.REAL else prevStatus
                 val detail = when {
                     curveResult.verified -> "EQ 预设 ${preset.label} 已下发并通过 0x42/0x43 回读一致"
                     presetResult is WriteResult.Verified -> "EQ 预设 ${preset.label} 已切换（0x40 -> 0x210134 回读一致）"
                     a2Verified -> "EQ 预设已通过 A2 写入并回读一致"
                     else -> "EQ 未确认生效：${curveResult.reason}"
                 }
-                it.copy(
-                    eqPresetId = preset.id,
-                    activePresetByte = presetByte,
-                    eqGains = curveResult.readbackState?.gains ?: preset.gains,
-                    eqStatus = newStatus,
-                    eqDetail = detail,
-                    message = if (verified) "EQ 预设「${preset.label}」已生效并回读确认。" else detail,
-                    features = it.features.withStatus("eq", newStatus, detail, true)
-                )
+                if (verified) {
+                    it.copy(
+                        eqPresetId = preset.id,
+                        activePresetByte = presetByte,
+                        eqGains = curveResult.readbackState?.gains ?: preset.gains,
+                        eqStatus = newStatus,
+                        eqDetail = detail,
+                        message = "EQ 预设「${preset.label}」已生效并回读确认。",
+                        features = it.features.withStatus("eq", newStatus, detail, true)
+                    )
+                } else {
+                    it.copy(
+                        eqPresetId = prevPresetId,
+                        activePresetByte = prevByte,
+                        eqGains = prevGains,
+                        eqStatus = newStatus,
+                        eqDetail = detail,
+                        message = detail
+                    )
+                }
             }
         }
     }
@@ -767,6 +812,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setGestureGroup(isLeft: Boolean, group: GestureFunctionGroup, holdVoiceAssistant: Boolean) {
         if (!state.value.controlReady) return
+        val prevLeft = base.value.leftGestureGroup
+        val prevRight = base.value.rightGestureGroup
+        val prevLeftHold = base.value.leftHoldVoiceAssistant
+        val prevRightHold = base.value.rightHoldVoiceAssistant
+        base.update {
+            if (isLeft) it.copy(leftGestureGroup = group, leftHoldVoiceAssistant = holdVoiceAssistant)
+            else it.copy(rightGestureGroup = group, rightHoldVoiceAssistant = holdVoiceAssistant)
+        }
         viewModelScope.launch {
             val frame = FrameCodec.buildSetGestureGroup(isLeft, group, holdVoiceAssistant)
             val result = queue.writeFrameAndVerify(
@@ -794,11 +847,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         )
                     }
                     is WriteResult.Unverified -> it.copy(
+                        leftGestureGroup = prevLeft,
+                        rightGestureGroup = prevRight,
+                        leftHoldVoiceAssistant = prevLeftHold,
+                        rightHoldVoiceAssistant = prevRightHold,
                         gestureStatus = FeatureStatus.UNVERIFIED,
                         gestureDetail = result.reason,
                         message = result.reason
                     )
-                    is WriteResult.Refused -> it.copy(message = result.reason)
+                    is WriteResult.Refused -> it.copy(
+                        leftGestureGroup = prevLeft,
+                        rightGestureGroup = prevRight,
+                        leftHoldVoiceAssistant = prevLeftHold,
+                        rightHoldVoiceAssistant = prevRightHold,
+                        message = result.reason
+                    )
                 }
             }
         }
@@ -851,6 +914,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setSmartAudioMode(mode: SmartAudioMode) {
         if (!state.value.controlReady) return
+        val prevMode = base.value.smartAudioMode
+        base.update { it.copy(smartAudioMode = mode) }
         viewModelScope.launch {
             val result = queue.writeAndVerify(mode.commandName) { f ->
                 FrameCodec.parseSmartSwitch(f) == mode
@@ -865,11 +930,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         features = it.features.withStatus("smart_av", FeatureStatus.REAL, "Smart A&V 写入 + 回读一致", true)
                     )
                     is WriteResult.Unverified -> it.copy(
+                        smartAudioMode = prevMode,
                         smartAudioStatus = FeatureStatus.UNVERIFIED,
                         smartAudioDetail = result.reason,
                         message = result.reason
                     )
-                    is WriteResult.Refused -> it.copy(message = result.reason)
+                    is WriteResult.Refused -> it.copy(smartAudioMode = prevMode, message = result.reason)
                 }
             }
         }
@@ -894,6 +960,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setVoiceAwareLevel(level: Int) {
         val target = level.coerceIn(0, 3)
         if (!state.value.controlReady) return
+        val prevLevel = base.value.voiceAwareLevel
+        base.update { it.copy(voiceAwareLevel = target) }
         viewModelScope.launch {
             var result = queue.writeFrameAndVerify(
                 frameHex = FrameCodec.hex(FrameCodec.buildVoiceAware(target)),
@@ -918,11 +986,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         features = it.features.withStatus("voice_aware", FeatureStatus.REAL, "VoiceAware 写入 + 回读一致", true)
                     )
                     is WriteResult.Unverified -> it.copy(
+                        voiceAwareLevel = prevLevel,
                         voiceAwareStatus = FeatureStatus.UNVERIFIED,
                         voiceAwareDetail = result.reason,
                         message = result.reason
                     )
-                    is WriteResult.Refused -> it.copy(message = result.reason)
+                    is WriteResult.Refused -> it.copy(voiceAwareLevel = prevLevel, message = result.reason)
                 }
             }
         }
@@ -931,33 +1000,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // -------------------------------------------------------- Wearing, Auto Play/Pause, Fit Test, Tips
 
     private suspend fun readWearingAndTips() {
-        val inEarFrame = queue.read("in_ear_read", timeoutOverrideMs = 350L) {
-            it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x41
-        }
-        val inEar = inEarFrame?.let { FrameCodec.parseInEarStatus(it) }
         val appFrame = queue.read("auto_play_pause_read") {
             it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x38
         }
         val autoPlay = appFrame?.let { FrameCodec.parseAutoPlayPauseStatus(it) }
-        val tipsFrame = queue.read("tips_type_read", timeoutOverrideMs = 350L)
-        val tips = tipsFrame?.let { FrameCodec.parseTipsType(it) }
 
         base.update { s ->
             val resolvedAuto = autoPlay ?: s.autoPlayPause
-            val status = if (autoPlay != null || inEar != null) FeatureStatus.READ_ONLY else s.autoPlayPauseStatus
+            val status = if (autoPlay != null) FeatureStatus.READ_ONLY else s.autoPlayPauseStatus
             s.copy(
-                inEar = inEar ?: s.inEar,
                 autoPlayPause = resolvedAuto,
                 autoPlayPauseStatus = status,
-                tipsType = tips ?: s.tipsType,
-                tipsTypeStatus = if (tips != null) FeatureStatus.READ_ONLY else s.tipsTypeStatus,
-                features = s.features.withStatus("wearing", status, "入耳与自动播放暂停已读取", true)
+                features = s.features.withStatus("wearing", status, "自动播放暂停已读取", true)
             )
         }
     }
 
     fun setAutoPlayPause(enabled: Boolean) {
         if (!state.value.controlReady) return
+        val prev = base.value.autoPlayPause
+        base.update { it.copy(autoPlayPause = enabled) }
         viewModelScope.launch {
             val cmdName = if (enabled) "auto_play_pause_on" else "auto_play_pause_off"
             val result = queue.writeAndVerify(
@@ -974,10 +1036,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         features = it.features.withStatus("wearing", FeatureStatus.REAL, "自动播放/暂停写入 + 回读一致", true)
                     )
                     is WriteResult.Unverified -> it.copy(
+                        autoPlayPause = prev,
                         autoPlayPauseStatus = FeatureStatus.UNVERIFIED,
                         message = result.reason
                     )
-                    is WriteResult.Refused -> it.copy(message = result.reason)
+                    is WriteResult.Refused -> it.copy(autoPlayPause = prev, message = result.reason)
                 }
             }
         }
@@ -1042,15 +1105,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val keepAnc = standbyFrame?.let { FrameCodec.parseStandbyModeKeepAnc(it) }
         val autoOffFrame = queue.read("auto_off_read") { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x33 }
         val autoOff = autoOffFrame?.let { FrameCodec.parseAutoOffStatus(it) }
-        val vpStatusFrame = queue.read("voice_prompt_status_read", timeoutOverrideMs = 350L)
-        val vpStatus = vpStatusFrame?.let { FrameCodec.parseVoicePrompt(it) }
         val vpLangFrame = queue.read("voice_prompt_lang_read")
         val vpLang = vpLangFrame?.let { FrameCodec.parseVoicePrompt(it) }
         val aiFrame = queue.read("multi_ai_read") { it.payload.firstOrNull()?.toInt()?.and(0xFF) == 0x35 }
         val ai = aiFrame?.let { FrameCodec.parseMultiAiStatus(it) }
 
         base.update { s ->
-            val stAny = if (keepAnc != null || autoOff != null || vpStatus != null || ai != null)
+            val stAny = if (keepAnc != null || autoOff != null || vpLang != null || ai != null)
                 FeatureStatus.READ_ONLY else s.standbyStatus
             s.copy(
                 standbyKeepAnc = keepAnc ?: s.standbyKeepAnc,
@@ -1058,9 +1119,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 autoOffEnabled = autoOff?.first ?: s.autoOffEnabled,
                 autoOffMinutes = autoOff?.second ?: s.autoOffMinutes,
                 autoOffStatus = if (autoOff != null) FeatureStatus.READ_ONLY else s.autoOffStatus,
-                voicePromptToneOnly = vpStatus?.toneOnly ?: s.voicePromptToneOnly,
-                voicePromptInfo = vpLang ?: vpStatus ?: s.voicePromptInfo,
-                voicePromptStatus = if (vpStatus != null || vpLang != null) FeatureStatus.READ_ONLY else s.voicePromptStatus,
+                voicePromptInfo = vpLang ?: s.voicePromptInfo,
+                voicePromptStatus = if (vpLang != null) FeatureStatus.READ_ONLY else s.voicePromptStatus,
                 multiAiMode = ai ?: s.multiAiMode,
                 multiAiStatus = if (ai != null) FeatureStatus.READ_ONLY else s.multiAiStatus,
                 features = s.features.withStatus("power_voice", stAny, "电源待机/关机、提示音与语音助手状态已读取", true)
@@ -1070,6 +1130,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setStandbyKeepAnc(keepAnc: Boolean) {
         if (!state.value.controlReady) return
+        val prev = base.value.standbyKeepAnc
+        base.update { it.copy(standbyKeepAnc = keepAnc) }
         viewModelScope.launch {
             val frame = FrameCodec.buildStandbyMode(keepAnc)
             val result = queue.writeFrameAndVerify(
@@ -1085,8 +1147,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         message = "自动待机策略已设为「${if (keepAnc) "保持降噪" else "普通待机"}」并回读一致。",
                         features = it.features.withStatus("power_voice", FeatureStatus.REAL, "自动待机写入 + 回读一致", true)
                     )
-                    is WriteResult.Unverified -> it.copy(standbyStatus = FeatureStatus.UNVERIFIED, message = result.reason)
-                    is WriteResult.Refused -> it.copy(message = result.reason)
+                    is WriteResult.Unverified -> it.copy(standbyKeepAnc = prev, standbyStatus = FeatureStatus.UNVERIFIED, message = result.reason)
+                    is WriteResult.Refused -> it.copy(standbyKeepAnc = prev, message = result.reason)
                 }
             }
         }
@@ -1095,6 +1157,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setAutoPowerOff(enabled: Boolean, minutes: Int) {
         if (!state.value.controlReady) return
         val m = minutes.coerceIn(5, 120)
+        val prevEn = base.value.autoOffEnabled
+        val prevMin = base.value.autoOffMinutes
+        base.update { it.copy(autoOffEnabled = enabled, autoOffMinutes = if (enabled) m else it.autoOffMinutes) }
         viewModelScope.launch {
             val frame = FrameCodec.buildAutoPowerOff(enabled, m)
             val result = queue.writeFrameAndVerify(
@@ -1115,8 +1180,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         message = if (enabled) "自动关机已设为 ${m} 分钟并回读确认。" else "自动关机已关闭并回读确认。",
                         features = it.features.withStatus("power_voice", FeatureStatus.REAL, "自动关机写入 + 回读一致", true)
                     )
-                    is WriteResult.Unverified -> it.copy(autoOffStatus = FeatureStatus.UNVERIFIED, message = result.reason)
-                    is WriteResult.Refused -> it.copy(message = result.reason)
+                    is WriteResult.Unverified -> it.copy(autoOffEnabled = prevEn, autoOffMinutes = prevMin, autoOffStatus = FeatureStatus.UNVERIFIED, message = result.reason)
+                    is WriteResult.Refused -> it.copy(autoOffEnabled = prevEn, autoOffMinutes = prevMin, message = result.reason)
                 }
             }
         }
@@ -1147,6 +1212,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setMultiAiMode(modeByte: Int) {
         if (!state.value.controlReady) return
+        val prev = base.value.multiAiMode
+        base.update { it.copy(multiAiMode = modeByte) }
         viewModelScope.launch {
             val frame = FrameCodec.buildMultiAi(modeByte)
             val result = queue.writeFrameAndVerify(
@@ -1162,8 +1229,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         multiAiStatus = FeatureStatus.REAL,
                         message = "语音助手预设已更新并回读确认。"
                     )
-                    is WriteResult.Unverified -> it.copy(multiAiStatus = FeatureStatus.UNVERIFIED, message = result.reason)
-                    is WriteResult.Refused -> it.copy(message = result.reason)
+                    is WriteResult.Unverified -> it.copy(multiAiMode = prev, multiAiStatus = FeatureStatus.UNVERIFIED, message = result.reason)
+                    is WriteResult.Refused -> it.copy(multiAiMode = prev, message = result.reason)
                 }
             }
         }
@@ -1479,6 +1546,63 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun openMelodyDetail() {
+        val ctx = getApplication<Application>()
+        val effective = ensureMacSnapshotState()
+        val mac = effective.system.deviceAddress.ifBlank { takeoverPrefs.loadSnapshot().mac }
+        if (mac.isBlank()) {
+            base.update { it.copy(message = "未找到已配对 JBL Tune 230NC，请先在系统蓝牙配对或开启权限") }
+            return
+        }
+        if (_rootBusy.value) return
+        _rootBusy.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (!TakeoverBridge.melodyHookAlive.value) {
+                    val wake = RootMelodyWake.wakeMelodyMainProcess()
+                    if (wake.ok) delay(450L)
+                }
+                TakeoverBridge.pushUiState(
+                    ctx,
+                    effective,
+                    triggerPopup = false,
+                    triggerMelodyPopup = false,
+                    triggerMelodyCapsule = false
+                )
+                delay(180L)
+                val preset = BridgeContract.presetByName(_takeoverConfig.value.spoofModelName)
+                val rootLaunch = RootMelodyWake.launchDetailActivityAsRoot(
+                    mac = mac,
+                    pidHex = preset.fallbackProductIdHex,
+                    modelName = preset.melodyName,
+                    color = preset.defaultColor
+                )
+                if (!rootLaunch.ok) {
+                    val intent = Intent().apply {
+                        setClassName(
+                            BridgeContract.PKG_MELODY,
+                            "com.oplus.melody.ui.component.detail.DetailMainActivity"
+                        )
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        putExtra("device_mac_info", mac)
+                        putExtra("product_id", preset.fallbackProductIdHex)
+                        putExtra("device_name", preset.melodyName)
+                        putExtra("product_color", preset.defaultColor)
+                    }
+                    val ok = runCatching { ctx.startActivity(intent) }.isSuccess
+                    base.update {
+                        it.copy(
+                            message = if (ok) "正在打开系统「${preset.melodyName}」耳机详情页…"
+                            else "打开系统耳机页失败（请确认已勾选 LSPosed 作用域并重启欢律）"
+                        )
+                    }
+                }
+            } finally {
+                _rootBusy.value = false
+            }
+        }
+    }
+
     fun updateTakeoverConfig(transform: (TakeoverConfig) -> TakeoverConfig) {
         val next = transform(_takeoverConfig.value)
         _takeoverConfig.value = next
@@ -1640,6 +1764,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (!state.value.controlReady) {
                     _diagProgress.value = "正在连接 BLE GATT 控制链路..."
                     TakeoverBridge.foregroundLinkActive.set(true)
+                    runCatching {
+                        val appCtx = getApplication<Application>()
+                        appCtx.stopService(Intent(appCtx, JblBridgeService::class.java))
+                    }
+                    delay(250L)
                     val t0 = System.currentTimeMillis()
                     val le = scanner.scanForLeSide(adapter)
                     var ready = if (le != null) connectAndWait(le) else null

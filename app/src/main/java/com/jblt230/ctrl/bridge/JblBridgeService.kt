@@ -1,5 +1,6 @@
 package com.jblt230.ctrl.bridge
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -25,8 +26,10 @@ import com.jblt230.ctrl.protocol.CommandTable
 import com.jblt230.ctrl.system.BatteryReflection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -34,11 +37,14 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Background GATT bridge for ColorOS LSPosed spoofing.
+ * Low-latency background GATT bridge for ColorOS LSPosed integration, Fluid Cloud, and AppWidget.
  *
- * Connects on demand when the JBL earbuds connect or when the hooked ColorOS Melody
- * UI issues an ANC / EQ / Find command, syncs real battery/status back to Melody,
- * and releases the single BLE control link afterwards unless `keepLinkAlive` is enabled.
+ * Optimizations in v2.1.0:
+ *  - Caches discovered `-LE` MAC (`snap.leMac`) to skip repeated 2-4s LE scans.
+ *  - Control commands (`CMD_SET_NOISE_MODE`, `CMD_SET_EQ_PRESET`, `CMD_FIND_BUDS`) take a
+ *    direct ~80ms fast path without redundant full refreshes or 2.5s `sync_app_status` waits.
+ *  - Keeps the GATT link warm when `keepLinkAlive` is enabled, or for a 30s idle window
+ *    when disabled so consecutive taps in ColorOS Melody execute instantaneously.
  */
 class JblBridgeService : Service() {
 
@@ -52,6 +58,7 @@ class JblBridgeService : Service() {
     private lateinit var queue: CommandQueue
     private lateinit var scanner: BleScanner
     private lateinit var prefs: TakeoverPrefs
+    private var idleReleaseJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -66,13 +73,14 @@ class JblBridgeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, buildNotification("正在同步 JBL T230NC 控制链路…"))
+        startForeground(NOTIFICATION_ID, buildNotification("正在同步 JBL Tune 230NC 控制链路…"))
         val cmd = intent?.getStringExtra(BridgeContract.EXTRA_CMD) ?: BridgeContract.CMD_CONNECT_AND_SYNC
         val triggerPopup = intent?.getBooleanExtra(BridgeContract.EXTRA_TRIGGER_POPUP, false) ?: false
         val noiseStr = intent?.getStringExtra(BridgeContract.EXTRA_NOISE_MODE)
         val eqPreset = intent?.getStringExtra(BridgeContract.EXTRA_EQ_PRESET)
         val findEnabled = intent?.getBooleanExtra(BridgeContract.EXTRA_FIND_LEFT, false) ?: false
 
+        idleReleaseJob?.cancel()
         scope.launch {
             try {
                 mutex.withLock {
@@ -83,15 +91,22 @@ class JblBridgeService : Service() {
             } finally {
                 val cfg = prefs.loadConfig()
                 if (!cfg.keepLinkAlive) {
-                    runCatching { transport.release() }
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
+                    idleReleaseJob?.cancel()
+                    idleReleaseJob = scope.launch {
+                        delay(IDLE_HOLD_MS)
+                        mutex.withLock {
+                            runCatching { transport.release() }
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                            stopSelf(startId)
+                        }
+                    }
                 }
             }
         }
         return START_NOT_STICKY
     }
 
+    @SuppressLint("MissingPermission")
     private suspend fun handleCommand(
         cmd: String,
         triggerPopup: Boolean,
@@ -100,7 +115,6 @@ class JblBridgeService : Service() {
         findEnabled: Boolean
     ) {
         if (TakeoverBridge.foregroundLinkActive.get()) {
-            // Foreground AppViewModel owns the sole GATT link: relay remote commands via broadcast.
             if (cmd != BridgeContract.CMD_CONNECT_AND_SYNC) {
                 sendBroadcast(Intent(ACTION_INTERNAL_FOREGROUND_CMD).apply {
                     setPackage(packageName)
@@ -116,18 +130,27 @@ class JblBridgeService : Service() {
         val ready = ensureConnected()
         val adapter = BluetoothAdapter.getDefaultAdapter()
         val classic = scanner.findClassicDevice(adapter, null)
-        val mac = classic?.address ?: prefs.loadSnapshot().mac
+        var snap = prefs.loadSnapshot()
+        val mac = classic?.address ?: snap.mac
         if (mac.isBlank()) return
+        if (snap.mac != mac) {
+            snap = snap.copy(mac = mac)
+        }
 
-        var snap = prefs.loadSnapshot().copy(mac = mac)
         if (!ready) {
             val sysLevel = classic?.let { BatteryReflection.read(it).level }
-            if (sysLevel != null && snap.leftBattery == null) {
+            if (sysLevel != null && snap.leftBattery == null && snap.rightBattery == null) {
                 snap = snap.copy(leftBattery = sysLevel, rightBattery = sysLevel)
             }
             TakeoverBridge.pushRawSnapshot(this, snap, controlReady = false, triggerPopup = triggerPopup)
             return
         }
+
+        // Fast control path: execute single command & push incremental update immediately.
+        val isControlCmd = cmd == BridgeContract.CMD_SET_NOISE_MODE ||
+            cmd == BridgeContract.CMD_CYCLE_NOISE_MODE ||
+            cmd == BridgeContract.CMD_SET_EQ_PRESET ||
+            cmd == BridgeContract.CMD_FIND_BUDS
 
         when (cmd) {
             BridgeContract.CMD_SET_NOISE_MODE -> {
@@ -166,11 +189,22 @@ class JblBridgeService : Service() {
             }
         }
 
-        // Perform handshake + full status/battery refresh
+        if (isControlCmd) {
+            TakeoverBridge.pushRawSnapshot(
+                context = this,
+                snap = snap,
+                deviceName = BridgeContract.cleanDisplayName(classic?.name),
+                controlReady = true,
+                triggerPopup = triggerPopup,
+                triggerMelodyCapsule = false
+            )
+            updateForegroundNotification(snap)
+            return
+        }
+
+        // Full initial / manual sync path (zero sync_app_status dead wait).
         val infoFrame = queue.read("device_info_read")
         val info = infoFrame?.let { FrameCodec.parseDeviceInfo(it) }
-        queue.read("sync_app_status")
-
         val batFrame = queue.read("battery_read")
         val bat = batFrame?.let { FrameCodec.parseBattery(it) }
         val statusFrame = queue.read("status_read_all") { f ->
@@ -184,9 +218,9 @@ class JblBridgeService : Service() {
 
         val sysLevel = classic?.let { BatteryReflection.read(it).level }
         snap = snap.copy(
-            leftBattery = bat?.left ?: snap.leftBattery ?: sysLevel,
-            rightBattery = bat?.right ?: snap.rightBattery ?: sysLevel,
-            caseBattery = bat?.case ?: snap.caseBattery,
+            leftBattery = if (bat != null) bat.left else (snap.leftBattery ?: sysLevel),
+            rightBattery = if (bat != null) bat.right else (snap.rightBattery ?: sysLevel),
+            caseBattery = if (bat != null) bat.case else snap.caseBattery,
             leftCharging = bat?.leftCharging ?: snap.leftCharging,
             rightCharging = bat?.rightCharging ?: snap.rightCharging,
             caseCharging = bat?.caseCharging ?: snap.caseCharging,
@@ -199,15 +233,20 @@ class JblBridgeService : Service() {
         TakeoverBridge.pushRawSnapshot(
             context = this,
             snap = snap,
-            deviceName = classic?.name ?: "JBL Tune 230NC",
+            deviceName = BridgeContract.cleanDisplayName(classic?.name),
             controlReady = true,
             triggerPopup = triggerPopup,
             triggerMelodyCapsule = cfg.melodySpoofEnabled && cfg.melodyAutoCapsule
         )
+        updateForegroundNotification(snap)
+    }
+
+    private fun updateForegroundNotification(snap: CachedDeviceSnapshot) {
+        val noise = runCatching { NoiseMode.valueOf(snap.noiseMode) }.getOrDefault(NoiseMode.OFF)
         val summary = "L ${BridgeContract.formatBatteryText(snap.leftBattery)} · " +
             "R ${BridgeContract.formatBatteryText(snap.rightBattery)} · " +
             "盒 ${BridgeContract.formatBatteryText(snap.caseBattery)} · " +
-            BridgeContract.noiseModeLabel(noise ?: NoiseMode.OFF)
+            BridgeContract.noiseModeLabel(noise)
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIFICATION_ID, buildNotification(summary))
     }
@@ -231,19 +270,37 @@ class JblBridgeService : Service() {
     private suspend fun ensureConnected(): Boolean {
         if (transport.linkState.value is LinkState.Ready) return true
         val adapter = BluetoothAdapter.getDefaultAdapter() ?: return false
-        val classic = scanner.findClassicDevice(adapter, null) ?: return false
+        val snap = prefs.loadSnapshot()
+
+        // 1. Try cached -LE MAC directly (~200ms vs 2-4s scan)
+        val cachedLeMac = snap.leMac
+        if (cachedLeMac.isNotBlank()) {
+            val cachedLeDev = runCatching { adapter.getRemoteDevice(cachedLeMac) }.getOrNull()
+            if (cachedLeDev != null && connectAndWait(cachedLeDev)) {
+                return true
+            }
+            transport.release()
+        }
+
+        // 2. Scan for -LE advertising side and persist its MAC
         val le = scanner.scanForLeSide(adapter)
-        if (le != null && connectAndWait(le)) return true
-        transport.release()
+        if (le != null) {
+            prefs.saveSnapshot(prefs.loadSnapshot().copy(leMac = le.address))
+            if (connectAndWait(le)) return true
+            transport.release()
+        }
+
+        // 3. Fallback to bonded Classic MAC
+        val classic = scanner.findClassicDevice(adapter, null) ?: return false
         return connectAndWait(classic)
     }
 
     private suspend fun connectAndWait(device: android.bluetooth.BluetoothDevice): Boolean {
         if (!transport.connect(device)) return false
-        val state = withTimeoutOrNull(table.scan.directConnectTimeoutMs) {
+        val link = withTimeoutOrNull(table.scan.directConnectTimeoutMs) {
             transport.linkState.first { it is LinkState.Ready || it is LinkState.Failed }
         }
-        return state is LinkState.Ready
+        return link is LinkState.Ready
     }
 
     private fun ensureChannel() {
@@ -266,13 +323,14 @@ class JblBridgeService : Service() {
         }
         return builder
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("JBL T230 Ctrl · 独立接管中")
+            .setContentTitle("JBL Tune 230NC · 后台控制已就绪")
             .setContentText(text)
             .setOngoing(true)
             .build()
     }
 
     override fun onDestroy() {
+        idleReleaseJob?.cancel()
         runCatching { transport.release() }
         scope.cancel()
         super.onDestroy()
@@ -284,6 +342,7 @@ class JblBridgeService : Service() {
         private const val TAG = "JblBridgeService"
         private const val CHANNEL_ID = "jbl_coloros_bridge"
         private const val NOTIFICATION_ID = 2301
+        private const val IDLE_HOLD_MS = 30_000L
         const val ACTION_INTERNAL_FOREGROUND_CMD = "com.jblt230.ctrl.ACTION_INTERNAL_FOREGROUND_CMD"
     }
 }

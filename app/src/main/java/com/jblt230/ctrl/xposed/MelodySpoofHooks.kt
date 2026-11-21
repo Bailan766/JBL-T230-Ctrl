@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import android.os.Parcel
 import android.os.Parcelable
 import android.util.Log
 import com.jblt230.ctrl.bridge.BridgeContract
@@ -24,22 +25,23 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * LSPosed hooks running inside ColorOS `com.oplus.melody` (both main & `:fg` processes, plus
- * `com.heytap.accessory` / `com.oplus.wirelesssettings`) so `JBL TUNE230NC TWS` presents as an
- * official OPPO Enco headset:
+ * LSPosed hooks running inside ColorOS `com.oplus.melody` (main & `:fg`), `com.heytap.accessory`,
+ * and `com.oplus.wirelesssettings` so `JBL TUNE230NC TWS` presents cleanly as a native OPPO headset:
  *
- * 1. Whitelist spoofing (`S8.a`, `S8.b`, `whitelist.a`, `V`, `l7.a`): maps JBL MAC/name to
- *    Melody's bundled OPPO Enco `WhitelistConfigDTO` (3D animations, capsule URIs, ANC/EQ metadata).
- * 2. Process-split isolation: `:fg` only hooks whitelist lookups and state mirrors while the
- *    main `com.oplus.melody` process manages SPP short-circuit, `EarphoneRepository` (`U.g1`
- *    fallback + `T()` persistence + `A8.a.h().m()` animation prefetch), `Q6.m.n` (`onForwardConnectedPopup`),
- *    and `Q6.m.m` (native欢律 Fluid Cloud capsule).
- * 3. Reliable popup launch: uses `route_from = "onForwardConnectedPopup"` (never `"onNewDeviceDiscovery"`
- *    which auto-dismisses when Fast-Discovery list is empty), waits 280ms after EventBus init &
- *    DTO injection, verifies `Q6.m.f` state mutation, and falls back to direct `DiscoveryDialogActivity`
- *    launch on forced user triggers.
- * 4. Bidirectional control (`BluetoothService$a.handleMessage`): relays ANC / EQ / FindMyBuds taps
- *    from ColorOS native UI back to `com.jblt230.ctrl/.bridge.JblBridgeReceiver`.
+ * 1. Whitelist sanitization & settings export (`S8.a`, `S8.b`, `whitelist.a`, `WhitelistOutsideSnapshot`):
+ *    - Exports JBL names in `ears_whitelist` and notifies `WirelessSettingHelper` so ColorOS Bluetooth
+ *      Settings recognizes JBL natively.
+ *    - Deep-clones the spoofed OPPO `WhitelistConfigDTO` and strips ~40 fake OPPO-only rows
+ *      (wear detection, fit test, dual-device, golden sound, OTA, etc.), keeping ONLY real working
+ *      controls (Battery, ANC/Transparency/TalkThru, EQ presets, Find My Buds).
+ * 2. Live interactive capability & ACKs (`1048649`, `1048605`, `1048604`, `1048576`):
+ *    - Emits capability ready (`1048649` without `265` wear-sensor block) & noise support bitmask.
+ *    - Intercepts `BluetoothService$a.handleMessage` (`1011`, `1013`, `1014`, `1015`), relays commands
+ *      to `JblBridgeReceiver`, emits immediate `1048576` (`SetCommandStateInfo` success) ACKs, and
+ *      short-circuits dead SPP readbacks (`1016`, `1017`, `1022`..`1026`, `1039`, `1045`, `1065`).
+ * 3. Incremental sync without event storms:
+ *    - Full initialization runs once per MAC/model switch; subsequent updates push only changed
+ *      battery/noise/EQ deltas for lag-free ColorOS UI updates.
  */
 object MelodySpoofHooks {
 
@@ -47,17 +49,61 @@ object MelodySpoofHooks {
     private const val POPUP_COOLDOWN_MS = 12_000L
     private const val CAPSULE_COOLDOWN_MS = 8_000L
 
+    private const val EVENT_SET_CMD_STATE = 1048576
     private const val EVENT_BATTERY_MSG = 1048588
     private const val EVENT_BATTERY = 1048591
     private const val EVENT_CONNECT_STATE = 1048592
     private const val EVENT_HEADSET_STATE = 1048594
     private const val EVENT_A2DP_STATE = 1048595
     private const val EVENT_STATUS = 1048598
+    private const val EVENT_SWITCH_NOISE_REDUCTION = 1048604
+    private const val EVENT_SUPPORT_NOISE_REDUCTION = 1048605
     private const val EVENT_NOISE_MODE = 1048616
     private const val EVENT_EQ_MODE = 1048617
+    private const val EVENT_CAPABILITY_READY = 1048649
+
+    private const val RSP_FIND_MODE = 33792
+    private const val RSP_NOISE_REDUCTION = 33796
+    private const val RSP_EQ_MODE = 33798
+
+    // Capability IDs for DetailMainViewModel / K (deliberately omits 265 = ear-wear check).
+    private val JBL_CAPABILITIES = arrayListOf(1024, 1028, 1030)
+
+    // Bitmask of supported noise protocol indices: 0 (OFF), 1 (ANC), 2 (TRANS), 8 (AMBIENT), 9 (TALKTHRU).
+    private const val JBL_NOISE_SUPPORT_MASK = (1 shl 0) or (1 shl 1) or (1 shl 2) or (1 shl 8) or (1 shl 9)
+
+    private val UNSUPPORTED_INT_FIELDS = listOf(
+        "personalNoise", "multiDevicesConnect", "dolbyAtmos", "highAudio", "highToneQuality",
+        "hearingEnhancement", "hearingEnhancementNew", "hearingOptimize", "adaptiveVolume",
+        "adaptiveEar", "voiceWake", "speechPerception", "aiTranslate", "aiSummary",
+        "aiSummaryToneSource", "gameMode", "whiteNoise", "zenMode", "spineHealth",
+        "sleepDetection", "meetingAssistant", "clickTakePic", "clickTakePicNew",
+        "headSetSoundRecord", "deviceLostRemind", "controlAutoVolumeSupport", "longPressVolume",
+        "controlGuideSupport", "voiceCommand", "headMotion", "customDress", "wearDetection",
+        "fitDetection", "swiftPair", "tapLevelSetting", "promptVolume", "heyMelodyDownload",
+        "autoFirmwareUpdate", "functionGuide", "functionIntroductionGuide", "newFunctionGuide",
+        "feedback", "collectLogs", "diagnostic", "smartCall", "vocalEnhance", "opsReduction",
+        "customEqualizer", "bassEngineSupport", "rlmMoreFunction", "related", "autoSwitchLink",
+        "earScan", "longPowerMode", "cleanGuide", "carouselDress", "honorWall", "immersiveRecord",
+        "incomingCallControl", "aiClearCall", "spatialVip", "spatialEarphoneFirst",
+        "spatialHiResMutex", "spatialDescriptionType", "spyTap", "supportPinch",
+        "strongNoiseReductionRealTime", "inBoxStatus", "openBoxPairing", "holdInBoxPairing",
+        "wearingVideoTutorial"
+    )
+
+    private val UNSUPPORTED_OBJECT_FIELDS = listOf(
+        "personalNoiseCompat", "multiConnectFunctions", "spatialTypes", "aiTranslateCompat",
+        "gameModeList", "gameSoundList", "gameEqualizer", "gameEqPkgList", "gameSoundMutexes",
+        "control", "callControl", "musicControl", "controlList", "dressFilterList",
+        "equalizerModeByColor", "equalizerModeByVersion", "equalizerModeCompat",
+        "introductionGuideList", "promptVolumeRange", "dialogTags", "voiceCommandItems",
+        "customEqFrequency", "mutexFunctions", "leFilterFunctions"
+    )
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val receiverRegistered = AtomicBoolean(false)
+    private val inRawWhitelistLookup = ThreadLocal.withInitial { false }
+    private val sanitizedDtoCache = ConcurrentHashMap<String, Any>()
     private val lastPopupMsByMac = ConcurrentHashMap<String, Long>()
     private val lastCapsuleMsByMac = ConcurrentHashMap<String, Long>()
 
@@ -76,10 +122,20 @@ object MelodySpoofHooks {
     @Volatile
     private var isMelodyFgProcess: Boolean = false
 
+    @Volatile
+    private var lastFullInjectKey: String = ""
+
+    @Volatile
+    private var lastWhitelistNotifiedKey: String = ""
+
+    @Volatile
+    private var lastEmittedState: SpoofState? = null
+
     private data class SpoofState(
         val enabled: Boolean = true,
         val targetMac: String? = null,
-        val realName: String = "JBL TUNE230NC TWS",
+        val realName: String = "JBL Tune 230NC",
+        val fwVersion: String = "",
         val spoofModel: String = "OPPO Enco X2",
         val spoofProductIdHex: String = "063C10",
         val spoofColor: Int = 0,
@@ -90,7 +146,7 @@ object MelodySpoofHooks {
         val leftCharging: Boolean = false,
         val rightCharging: Boolean = false,
         val caseCharging: Boolean = false,
-        val noiseIndex: Int = 2,
+        val noiseIndex: Int = 0,
         val eqType: Int = 0,
         val boxOpen: Boolean = true
     )
@@ -137,6 +193,7 @@ object MelodySpoofHooks {
                         if (packageName == BridgeContract.PKG_MELODY) {
                             registerSyncReceiverIfNeeded(app.applicationContext)
                             if (isMelodyMainProcess) {
+                                notifySystemWhitelistChanged(app.applicationContext, state.spoofProductIdHex)
                                 sendHookAck(
                                     app.applicationContext,
                                     "boot_ready",
@@ -179,9 +236,13 @@ object MelodySpoofHooks {
         val updated = SpoofState(
             enabled = intent.getBooleanExtra(BridgeContract.EXTRA_MELODY_SPOOF_ENABLED, prev.enabled),
             targetMac = mac ?: prev.targetMac,
-            realName = intent.getStringExtra(BridgeContract.EXTRA_DEVICE_NAME) ?: prev.realName,
+            realName = BridgeContract.cleanDisplayName(
+                intent.getStringExtra(BridgeContract.EXTRA_DEVICE_NAME) ?: prev.realName
+            ),
+            fwVersion = intent.getStringExtra(BridgeContract.EXTRA_FW_VERSION) ?: prev.fwVersion,
             spoofModel = intent.getStringExtra(BridgeContract.EXTRA_SPOOF_MODEL) ?: prev.spoofModel,
-            spoofProductIdHex = intent.getStringExtra(BridgeContract.EXTRA_SPOOF_PID) ?: prev.spoofProductIdHex,
+            spoofProductIdHex = (intent.getStringExtra(BridgeContract.EXTRA_SPOOF_PID)
+                ?: prev.spoofProductIdHex).uppercase(),
             spoofColor = intent.getIntExtra(BridgeContract.EXTRA_SPOOF_COLOR, prev.spoofColor),
             spoofType = intent.getStringExtra(BridgeContract.EXTRA_SPOOF_TYPE) ?: prev.spoofType,
             leftBattery = intent.getIntExtra(BridgeContract.EXTRA_LEFT_BATTERY, prev.leftBattery),
@@ -194,11 +255,16 @@ object MelodySpoofHooks {
             eqType = intent.getIntExtra(BridgeContract.EXTRA_EQ_TYPE, prev.eqType)
         )
         state = updated
+        if (prev.spoofProductIdHex != updated.spoofProductIdHex) {
+            sanitizedDtoCache.clear()
+        }
 
         if (isMelodyFgProcess || !isMelodyMainProcess) {
             return
         }
         if (!updated.enabled) {
+            lastFullInjectKey = ""
+            lastEmittedState = null
             sendHookAck(context, "disabled", "欢律伪装已关闭")
             return
         }
@@ -210,6 +276,7 @@ object MelodySpoofHooks {
         }
 
         val loader = appClassLoader ?: context.classLoader
+        notifySystemWhitelistChanged(context, updated.spoofProductIdHex)
         injectIntoMelodyState(loader, activeMac, updated)
 
         val triggerPopup = intent.getBooleanExtra(BridgeContract.EXTRA_TRIGGER_MELODY_POPUP, false)
@@ -218,18 +285,18 @@ object MelodySpoofHooks {
             triggerPopup -> {
                 mainHandler.postDelayed({
                     triggerNativePopup(loader, context, activeMac, updated, force = true)
-                }, 280L)
+                }, 220L)
             }
             triggerCapsule -> {
                 mainHandler.postDelayed({
                     triggerNativeCapsule(loader, context, activeMac, updated, force = true)
-                }, 220L)
+                }, 180L)
             }
             else -> {
                 sendHookAck(
                     context,
                     "synced",
-                    "已同步 ${updated.spoofModel} (${updated.spoofProductIdHex}) 电量 L=${updated.leftBattery}% R=${updated.rightBattery}% 盒=${updated.caseBattery}%"
+                    "已同步 ${updated.spoofModel} (${updated.spoofProductIdHex}) L=${updated.leftBattery}% R=${updated.rightBattery}% 盒=${updated.caseBattery}%"
                 )
             }
         }
@@ -243,63 +310,131 @@ object MelodySpoofHooks {
         for (clsName in concreteRepoClasses) {
             val cls = findClassOrNull(clsName, classLoader) ?: continue
             hookMethodSafe(cls, "a", String::class.java) { param ->
-                if (!state.enabled || param.result != null) return@hookMethodSafe
+                if (!state.enabled || inRawWhitelistLookup.get() == true) return@hookMethodSafe
                 val mac = param.args.firstOrNull() as? String
                 if (isTargetMac(mac)) {
-                    param.result = resolveSpoofWhitelistDto(classLoader)
+                    resolveSpoofWhitelistDto(classLoader)?.let { param.result = it }
                 }
             }
             hookMethodSafe(cls, "c", String::class.java, String::class.java) { param ->
-                if (!state.enabled || param.result != null) return@hookMethodSafe
+                if (!state.enabled || inRawWhitelistLookup.get() == true) return@hookMethodSafe
                 val pid = param.args.getOrNull(0) as? String
                 val name = param.args.getOrNull(1) as? String
-                if (BridgeContract.isTargetJblName(name) ||
-                    (!pid.isNullOrBlank() && pid.equals("000000", ignoreCase = true) && isTargetDevice(null, name))
+                val isTargetPidWithJblActive = !pid.isNullOrBlank() &&
+                    pid.equals(state.spoofProductIdHex, ignoreCase = true) &&
+                    !state.targetMac.isNullOrBlank()
+                if (BridgeContract.isTargetJblName(name) || isTargetPidWithJblActive ||
+                    (param.result == null && !pid.isNullOrBlank() && pid.equals("000000", ignoreCase = true) && isTargetDevice(null, name))
                 ) {
-                    param.result = resolveSpoofWhitelistDto(classLoader)
+                    resolveSpoofWhitelistDto(classLoader)?.let { param.result = it }
+                }
+            }
+            hookMethodSafe(cls, "k") { param ->
+                if (!state.enabled) return@hookMethodSafe
+                val orig = param.result ?: return@hookMethodSafe
+                val patched = appendJblToOutsideSnapshot(classLoader, orig, state.spoofProductIdHex)
+                if (patched != null) {
+                    param.result = patched
                 }
             }
         }
 
         findClassOrNull("S8.a", classLoader)?.let { abstractRepoCls ->
             hookMethodSafe(abstractRepoCls, "b", Int::class.javaPrimitiveType!!, String::class.java) { param ->
-                if (!state.enabled || param.result != null) return@hookMethodSafe
+                if (!state.enabled || inRawWhitelistLookup.get() == true) return@hookMethodSafe
+                val pidInt = (param.args.getOrNull(0) as? Int) ?: 0
                 val name = param.args.getOrNull(1) as? String
-                if (BridgeContract.isTargetJblName(name)) {
-                    param.result = resolveSpoofWhitelistDto(classLoader)
+                val targetPidInt = BridgeContract.parseProductIdInt(state.spoofProductIdHex)
+                if (BridgeContract.isTargetJblName(name) ||
+                    (pidInt == targetPidInt && !state.targetMac.isNullOrBlank())
+                ) {
+                    resolveSpoofWhitelistDto(classLoader)?.let { param.result = it }
                 }
             }
         }
 
         findClassOrNull("l7.a", classLoader)?.let { supportCls ->
             hookMethodSafe(supportCls, "a", String::class.java) { param ->
-                if (!state.enabled || param.result != null) return@hookMethodSafe
+                if (!state.enabled || inRawWhitelistLookup.get() == true) return@hookMethodSafe
                 val mac = param.args.firstOrNull() as? String
                 if (isTargetMac(mac)) {
-                    param.result = resolveSpoofWhitelistDto(classLoader)
+                    resolveSpoofWhitelistDto(classLoader)?.let { param.result = it }
                 }
             }
         }
 
         findClassOrNull("com.oplus.melody.common.util.V", classLoader)?.let { vCls ->
             hookMethodSafe(vCls, "b", BluetoothDevice::class.java, Collection::class.java) { param ->
-                if (!state.enabled || param.result != null) return@hookMethodSafe
+                if (!state.enabled || inRawWhitelistLookup.get() == true) return@hookMethodSafe
                 val dev = param.args.getOrNull(0) as? BluetoothDevice ?: return@hookMethodSafe
                 val coll = param.args.getOrNull(1) as? Collection<*>
                 if (isTargetDevice(dev.address, safeDeviceName(dev))) {
                     learnTargetMac(dev.address)
-                    param.result = findDtoInCollection(coll) ?: resolveSpoofWhitelistDto(classLoader)
+                    param.result = resolveSpoofWhitelistDto(classLoader) ?: findDtoInCollection(coll)
                 }
             }
             hookMethodSafe(vCls, "a", Collection::class.java, String::class.java, String::class.java) { param ->
-                if (!state.enabled || param.result != null) return@hookMethodSafe
+                if (!state.enabled || inRawWhitelistLookup.get() == true) return@hookMethodSafe
                 val coll = param.args.getOrNull(0) as? Collection<*>
+                val pid = param.args.getOrNull(1) as? String
                 val name = param.args.getOrNull(2) as? String
-                if (BridgeContract.isTargetJblName(name)) {
-                    param.result = findDtoInCollection(coll) ?: resolveSpoofWhitelistDto(classLoader)
+                val isTargetPidActive = !pid.isNullOrBlank() &&
+                    pid.equals(state.spoofProductIdHex, ignoreCase = true) &&
+                    !state.targetMac.isNullOrBlank()
+                if (BridgeContract.isTargetJblName(name) || isTargetPidActive) {
+                    param.result = resolveSpoofWhitelistDto(classLoader) ?: findDtoInCollection(coll)
                 }
             }
         }
+    }
+
+    private fun appendJblToOutsideSnapshot(
+        classLoader: ClassLoader,
+        snapshot: Any,
+        pidHex: String
+    ): Any? = runCatching {
+        val snapCls = snapshot.javaClass
+        val itemCls = findClassOrNull(
+            "com.oplus.melody.model.repository.whitelist.WhitelistOutsideSnapshot\$Item",
+            classLoader
+        ) ?: return@runCatching null
+        val version = runCatching { XposedHelpers.callMethod(snapshot, "getVersion") as? String }.getOrNull() ?: "1"
+        @Suppress("UNCHECKED_CAST")
+        val existing = runCatching {
+            XposedHelpers.callMethod(snapshot, "getWhitelist") as? List<Any>
+        }.getOrNull().orEmpty()
+
+        val existingNames = existing.mapNotNull {
+            runCatching { XposedHelpers.callMethod(it, "getName") as? String }.getOrNull()?.uppercase()
+        }.toSet()
+        val jblNames = listOf("JBL TUNE230NC TWS", "JBL TUNE230NC TWS-LE", "JBL Tune 230NC")
+        if (jblNames.all { it.uppercase() in existingNames }) {
+            return@runCatching null
+        }
+
+        val combined = ArrayList<Any>(existing.size + jblNames.size)
+        combined.addAll(existing)
+        val pidUpper = pidHex.uppercase()
+        for (name in jblNames) {
+            if (name.uppercase() !in existingNames) {
+                combined.add(XposedHelpers.newInstance(itemCls, pidUpper, name, 0))
+            }
+        }
+        XposedHelpers.newInstance(snapCls, version, combined)
+    }.onFailure { log("appendJblToOutsideSnapshot failed: ${it.message}") }.getOrNull()
+
+    private fun notifySystemWhitelistChanged(context: Context, pidHex: String) {
+        val key = "${context.packageName}|${pidHex.uppercase()}"
+        if (lastWhitelistNotifiedKey == key) return
+        lastWhitelistNotifiedKey = key
+        runCatching {
+            val helperCls = findClassOrNull(
+                "com.oplus.melody.model.helper.WirelessSettingHelper",
+                context.classLoader
+            ) ?: return@runCatching
+            XposedHelpers.callStaticMethod(helperCls, "sendWhiteListChangedBroadCast", context)
+            log("Broadcasted WirelessSettingHelper whitelist change for JBL ($pidHex)")
+        }.onFailure { log("sendWhiteListChangedBroadCast skipped: ${it.message}") }
     }
 
     private fun hookEarphoneRepositoryFallback(classLoader: ClassLoader) {
@@ -315,6 +450,24 @@ object MelodySpoofHooks {
             }
         }
     }
+
+    private fun buildSupportNoiseReductionInfo(classLoader: ClassLoader): Any? = runCatching {
+        val nrCls = findClassOrNull("com.oplus.melody.btsdk.api.data.NoiseReductionInfo", classLoader)
+            ?: return@runCatching null
+        XposedHelpers.newInstance(nrCls).also {
+            XposedHelpers.callMethod(it, "setAction", 1)
+            XposedHelpers.callMethod(it, "setType", 1)
+            XposedHelpers.callMethod(it, "setValue", JBL_NOISE_SUPPORT_MASK)
+        }
+    }.getOrNull()
+
+    private fun buildSupportNoiseReductionDto(classLoader: ClassLoader): Any? = runCatching {
+        val dtoCls = findClassOrNull(
+            "com.oplus.melody.model.repository.earphone.NoiseReductionInfoDTO",
+            classLoader
+        ) ?: return@runCatching null
+        XposedHelpers.newInstance(dtoCls, 1, 1, JBL_NOISE_SUPPORT_MASK)
+    }.getOrNull()
 
     private fun synthesizeEarphoneDto(
         classLoader: ClassLoader,
@@ -359,6 +512,13 @@ object MelodySpoofHooks {
         XposedHelpers.callMethod(statusDo, "setA2dpConnectionState", 2)
         XposedHelpers.callMethod(statusDo, "setHeadsetConnectionState", 2)
         XposedHelpers.callMethod(statusDo, "setDeviceBonded", true)
+        XposedHelpers.callMethod(statusDo, "setInitCmdCompleted", true)
+        XposedHelpers.callMethod(statusDo, "setCapabilityReady", true)
+        XposedHelpers.callMethod(statusDo, "setCapability", ArrayList(JBL_CAPABILITIES))
+        buildSupportNoiseReductionDto(classLoader)?.let {
+            XposedHelpers.callMethod(statusDo, "setSupportNoiseReductionInfo", it)
+            XposedHelpers.callMethod(statusDo, "setSwitchNoiseReductionInfo", it)
+        }
         XposedHelpers.callMethod(statusDo, "setNoiseReductionModeIndex", current.noiseIndex)
         XposedHelpers.callMethod(statusDo, "setEqType", current.eqType)
 
@@ -419,6 +579,7 @@ object MelodySpoofHooks {
 
             if (connectedEvent) {
                 log("Detected JBL BT connect in Melody: $action ($mac)")
+                notifySystemWhitelistChanged(context, state.spoofProductIdHex)
                 sendHookAck(context, "bt_connected", "欢律已捕获 JBL 蓝牙连接 ($mac)")
                 sendRemoteCommand(context, mac, BridgeContract.CMD_CONNECT_AND_SYNC)
                 val current = state.copy(targetMac = mac)
@@ -426,7 +587,7 @@ object MelodySpoofHooks {
                 // Trigger 3D popup first; triggering capsule first causes Q6.m.n's g(mac) guard to suppress the popup.
                 mainHandler.postDelayed({
                     triggerNativePopup(classLoader, context, mac, current, force = false)
-                }, 280L)
+                }, 260L)
             }
         }
     }
@@ -459,7 +620,7 @@ object MelodySpoofHooks {
                         val current = state.copy(targetMac = mac)
                         ensureEventBusSubscribersInitialized(classLoader)
                         applySnapshotToDeviceInfo(classLoader, info, current)
-                        emitMelodyEvents(classLoader, info)
+                        emitMelodyEvents(classLoader, info, full = true, prev = null, current = current)
                         appContext?.let {
                             sendHookAck(it, "spp_shortcircuit", "已短接欢律 SPP 通道 ($mac)")
                             sendRemoteCommand(it, mac, BridgeContract.CMD_CONNECT_AND_SYNC)
@@ -500,6 +661,7 @@ object MelodySpoofHooks {
                                     putBoolean(BridgeContract.EXTRA_FIND_RIGHT, inFind)
                                 }
                                 sendRemoteCommand(ctx, mac, BridgeContract.CMD_FIND_BUDS, extra)
+                                emitSetCommandAck(classLoader, mac, RSP_FIND_MODE)
                                 param.result = null
                             }
 
@@ -544,8 +706,47 @@ object MelodySpoofHooks {
                                 sendRemoteCommand(ctx, mac, BridgeContract.CMD_SET_EQ_PRESET, extra)
                                 getOrCreateDeviceInfo(classLoader, mac, state)?.let {
                                     applySnapshotToDeviceInfo(classLoader, it, state)
-                                    emitMelodyEvents(classLoader, it)
+                                    emitSingleEvent(classLoader, EVENT_EQ_MODE, it)
                                 }
+                                emitSetCommandAck(classLoader, mac, RSP_EQ_MODE)
+                                param.result = null
+                            }
+
+                            // Short-circuit Melody SPP readback requests so dead OPPO SPP never stalls UI.
+                            1016 -> {
+                                getOrCreateDeviceInfo(classLoader, mac, state)?.let {
+                                    applySnapshotToDeviceInfo(classLoader, it, state)
+                                    emitSingleEvent(classLoader, EVENT_EQ_MODE, it)
+                                }
+                                param.result = null
+                            }
+
+                            1023 -> {
+                                getOrCreateDeviceInfo(classLoader, mac, state)?.let {
+                                    applySnapshotToDeviceInfo(classLoader, it, state)
+                                    emitSingleEvent(classLoader, EVENT_NOISE_MODE, it)
+                                }
+                                param.result = null
+                            }
+
+                            1024 -> {
+                                getOrCreateDeviceInfo(classLoader, mac, state)?.let {
+                                    applySnapshotToDeviceInfo(classLoader, it, state)
+                                    emitSingleEvent(classLoader, EVENT_SUPPORT_NOISE_REDUCTION, it)
+                                }
+                                param.result = null
+                            }
+
+                            1025 -> {
+                                getOrCreateDeviceInfo(classLoader, mac, state)?.let {
+                                    applySnapshotToDeviceInfo(classLoader, it, state)
+                                    emitSingleEvent(classLoader, EVENT_SWITCH_NOISE_REDUCTION, it)
+                                }
+                                param.result = null
+                            }
+
+                            1017, 1022, 1026, 1039, 1045, 1065 -> {
+                                // Safely consume unsupported OPPO SPP query opcodes on JBL MAC.
                                 param.result = null
                             }
                         }
@@ -567,8 +768,39 @@ object MelodySpoofHooks {
         sendRemoteCommand(ctx, mac, BridgeContract.CMD_SET_NOISE_MODE, extra)
         getOrCreateDeviceInfo(classLoader, mac, state)?.let {
             applySnapshotToDeviceInfo(classLoader, it, state)
-            emitMelodyEvents(classLoader, it)
+            emitSingleEvent(classLoader, EVENT_NOISE_MODE, it)
         }
+        emitSetCommandAck(classLoader, mac, RSP_NOISE_REDUCTION)
+    }
+
+    private fun emitSetCommandAck(
+        classLoader: ClassLoader,
+        mac: String,
+        responseCommand: Int,
+        status: Int = 0
+    ) {
+        runCatching {
+            val infoCls = findClassOrNull(
+                "com.oplus.melody.btsdk.api.data.SetCommandStateInfo",
+                classLoader
+            ) ?: return@runCatching
+            val coreCls = findClassOrNull(
+                "com.oplus.melody.btsdk.multidevice.HeadsetCoreService",
+                classLoader
+            ) ?: return@runCatching
+            val recvCls = findClassOrNull(
+                "com.oplus.melody.btsdk.api.data.BluetoothReceiveData",
+                classLoader
+            ) ?: return@runCatching
+
+            val ack = XposedHelpers.newInstance(infoCls)
+            XposedHelpers.setObjectField(ack, "mAddress", mac)
+            XposedHelpers.setIntField(ack, "mSetStatus", status)
+            XposedHelpers.setIntField(ack, "mResponseCommand", responseCommand)
+            XposedHelpers.setIntField(ack, "mRspValue", 0)
+            val data = XposedHelpers.newInstance(recvCls, EVENT_SET_CMD_STATE, ack)
+            XposedHelpers.callStaticMethod(coreCls, "m0", data)
+        }.onFailure { log("emitSetCommandAck failed: ${it.message}") }
     }
 
     private fun ensureEventBusSubscribersInitialized(classLoader: ClassLoader) {
@@ -588,38 +820,52 @@ object MelodySpoofHooks {
         mainHandler.post {
             runCatching {
                 ensureEventBusSubscribersInitialized(classLoader)
-                val dto = resolveSpoofWhitelistDto(classLoader)
-                val pidHex = (dto?.let {
-                    runCatching { XposedHelpers.callMethod(it, "getId") as? String }.getOrNull()
-                } ?: current.spoofProductIdHex).uppercase()
-                val title = dto?.let {
-                    runCatching { XposedHelpers.callMethod(it, "getName") as? String }.getOrNull()
-                } ?: current.spoofModel
-                val color = dto?.let {
-                    runCatching { XposedHelpers.callMethod(it, "getDefaultColor") as? Int }.getOrNull()
-                } ?: current.spoofColor
+                val key = "$mac|${current.spoofProductIdHex}|${current.spoofModel}"
+                val needFullInit = lastFullInjectKey != key
+                val prevEmitted = lastEmittedState
 
-                runCatching {
-                    findClassOrNull("com.oplus.melody.model.repository.earphone.c", classLoader)?.let { earRepoCls ->
-                        val repo = XposedHelpers.callStaticMethod(earRepoCls, "G")
-                        if (repo != null) {
-                            XposedHelpers.callMethod(repo, "T", color, mac, title, pidHex)
+                if (needFullInit) {
+                    val dto = resolveSpoofWhitelistDto(classLoader)
+                    val pidHex = (dto?.let {
+                        runCatching { XposedHelpers.callMethod(it, "getId") as? String }.getOrNull()
+                    } ?: current.spoofProductIdHex).uppercase()
+                    val title = dto?.let {
+                        runCatching { XposedHelpers.callMethod(it, "getName") as? String }.getOrNull()
+                    } ?: current.spoofModel
+                    val color = dto?.let {
+                        runCatching { XposedHelpers.callMethod(it, "getDefaultColor") as? Int }.getOrNull()
+                    } ?: current.spoofColor
+
+                    runCatching {
+                        findClassOrNull("com.oplus.melody.model.repository.earphone.c", classLoader)?.let { earRepoCls ->
+                            val repo = XposedHelpers.callStaticMethod(earRepoCls, "G")
+                            if (repo != null) {
+                                XposedHelpers.callMethod(repo, "T", color, mac, title, pidHex)
+                            }
                         }
                     }
-                }
 
-                runCatching {
-                    findClassOrNull("A8.a", classLoader)?.let { dlCls ->
-                        val dl = XposedHelpers.callStaticMethod(dlCls, "h")
-                        if (dl != null) {
-                            XposedHelpers.callMethod(dl, "m", color, pidHex)
+                    runCatching {
+                        findClassOrNull("A8.a", classLoader)?.let { dlCls ->
+                            val dl = XposedHelpers.callStaticMethod(dlCls, "h")
+                            if (dl != null) {
+                                XposedHelpers.callMethod(dl, "m", color, pidHex)
+                            }
                         }
                     }
                 }
 
                 val info = getOrCreateDeviceInfo(classLoader, mac, current) ?: return@post
                 applySnapshotToDeviceInfo(classLoader, info, current)
-                emitMelodyEvents(classLoader, info)
+                emitMelodyEvents(
+                    classLoader = classLoader,
+                    deviceInfo = info,
+                    full = needFullInit,
+                    prev = prevEmitted,
+                    current = current
+                )
+                lastFullInjectKey = key
+                lastEmittedState = current
             }.onFailure { log("injectIntoMelodyState failed: ${it.message}") }
         }
     }
@@ -717,6 +963,27 @@ object MelodySpoofHooks {
             XposedHelpers.callMethod(info, "setDeviceAclConnectState", 2)
             XposedHelpers.callMethod(info, "setDeviceA2dpConnectState", 2)
             XposedHelpers.callMethod(info, "setDeviceHeadsetConnectState", 2)
+            XposedHelpers.callMethod(info, "setCapability", ArrayList(JBL_CAPABILITIES))
+        }
+
+        buildSupportNoiseReductionInfo(classLoader)?.let { nrInfo ->
+            runCatching {
+                XposedHelpers.callMethod(info, "setNoiseReductionInfo", nrInfo)
+                XposedHelpers.callMethod(info, "setSwitchNoiseReductionInfo", nrInfo)
+            }
+        }
+
+        if (current.fwVersion.isNotBlank()) {
+            val verCls = findClassOrNull("com.oplus.melody.btsdk.api.data.VersionInfo", classLoader)
+            if (verCls != null) {
+                runCatching {
+                    val versions = ArrayList<Any>(2).apply {
+                        add(XposedHelpers.newInstance(verCls, 1, 2, current.fwVersion))
+                        add(XposedHelpers.newInstance(verCls, 2, 2, current.fwVersion))
+                    }
+                    XposedHelpers.callMethod(info, "setVersionInfo", versions)
+                }
+            }
         }
 
         val batteryList = buildBatteryInfoList(classLoader, current)
@@ -760,7 +1027,13 @@ object MelodySpoofHooks {
         }
     }
 
-    private fun emitMelodyEvents(classLoader: ClassLoader, deviceInfo: Any) {
+    private fun emitMelodyEvents(
+        classLoader: ClassLoader,
+        deviceInfo: Any,
+        full: Boolean,
+        prev: SpoofState?,
+        current: SpoofState
+    ) {
         val coreCls = findClassOrNull(
             "com.oplus.melody.btsdk.multidevice.HeadsetCoreService",
             classLoader
@@ -769,21 +1042,61 @@ object MelodySpoofHooks {
             "com.oplus.melody.btsdk.api.data.BluetoothReceiveData",
             classLoader
         ) ?: return
-        val events = intArrayOf(
-            EVENT_CONNECT_STATE,
-            EVENT_HEADSET_STATE,
-            EVENT_A2DP_STATE,
-            EVENT_BATTERY_MSG,
-            EVENT_BATTERY,
-            EVENT_STATUS,
-            EVENT_NOISE_MODE,
-            EVENT_EQ_MODE
-        )
+
+        val events = ArrayList<Int>(11)
+        if (full || prev == null) {
+            events.addAll(
+                listOf(
+                    EVENT_CONNECT_STATE,
+                    EVENT_HEADSET_STATE,
+                    EVENT_A2DP_STATE,
+                    EVENT_CAPABILITY_READY,
+                    EVENT_SUPPORT_NOISE_REDUCTION,
+                    EVENT_SWITCH_NOISE_REDUCTION,
+                    EVENT_BATTERY_MSG,
+                    EVENT_BATTERY,
+                    EVENT_STATUS,
+                    EVENT_NOISE_MODE,
+                    EVENT_EQ_MODE
+                )
+            )
+        } else {
+            val batChanged = prev.leftBattery != current.leftBattery ||
+                prev.rightBattery != current.rightBattery ||
+                prev.caseBattery != current.caseBattery ||
+                prev.leftCharging != current.leftCharging ||
+                prev.rightCharging != current.rightCharging ||
+                prev.caseCharging != current.caseCharging
+            if (batChanged) {
+                events.add(EVENT_BATTERY)
+            }
+            if (prev.noiseIndex != current.noiseIndex) {
+                events.add(EVENT_NOISE_MODE)
+            }
+            if (prev.eqType != current.eqType) {
+                events.add(EVENT_EQ_MODE)
+            }
+        }
         for (code in events) {
             runCatching {
                 val data = XposedHelpers.newInstance(recvCls, code, deviceInfo)
                 XposedHelpers.callStaticMethod(coreCls, "m0", data)
             }
+        }
+    }
+
+    private fun emitSingleEvent(classLoader: ClassLoader, eventCode: Int, deviceInfo: Any) {
+        val coreCls = findClassOrNull(
+            "com.oplus.melody.btsdk.multidevice.HeadsetCoreService",
+            classLoader
+        ) ?: return
+        val recvCls = findClassOrNull(
+            "com.oplus.melody.btsdk.api.data.BluetoothReceiveData",
+            classLoader
+        ) ?: return
+        runCatching {
+            val data = XposedHelpers.newInstance(recvCls, eventCode, deviceInfo)
+            XposedHelpers.callStaticMethod(coreCls, "m0", data)
         }
     }
 
@@ -828,7 +1141,7 @@ object MelodySpoofHooks {
                     "已连接",
                     batList
                 )
-                sendHookAck(context, "capsule_launched", "欢律原生胶囊已触发 ($title / $pidHex)")
+                sendHookAck(context, "capsule_launched", "欢律原生流体云已触发 ($title / $pidHex)")
             }.onFailure {
                 val msg = it.message ?: it.javaClass.simpleName
                 log("triggerNativeCapsule failed: $msg")
@@ -922,25 +1235,161 @@ object MelodySpoofHooks {
     }
 
     private fun resolveSpoofWhitelistDto(classLoader: ClassLoader): Any? {
-        findClassOrNull("S8.a", classLoader)?.let { repoCls ->
-            val repo = runCatching { XposedHelpers.callStaticMethod(repoCls, "f") }.getOrNull()
-            if (repo != null) {
-                val direct = runCatching {
-                    XposedHelpers.callMethod(repo, "c", state.spoofProductIdHex, null)
-                }.getOrNull()
-                if (direct != null) return direct
-                val list = runCatching { XposedHelpers.callMethod(repo, "g") as? Collection<*> }.getOrNull()
-                findDtoInCollection(list)?.let { return it }
+        val raw = resolveRawWhitelistDto(classLoader) ?: return null
+        val pidHex = runCatching { XposedHelpers.callMethod(raw, "getId") as? String }
+            .getOrNull()?.uppercase()
+            ?: state.spoofProductIdHex.uppercase()
+        sanitizedDtoCache[pidHex]?.let { return it }
+        val built = buildSanitizedJblDto(classLoader, raw)
+        if (built != null) {
+            sanitizedDtoCache[pidHex] = built
+            return built
+        }
+        return raw
+    }
+
+    private fun resolveRawWhitelistDto(classLoader: ClassLoader): Any? {
+        val prevFlag = inRawWhitelistLookup.get() ?: false
+        inRawWhitelistLookup.set(true)
+        try {
+            findClassOrNull("S8.a", classLoader)?.let { repoCls ->
+                val repo = runCatching { XposedHelpers.callStaticMethod(repoCls, "f") }.getOrNull()
+                if (repo != null) {
+                    val direct = runCatching {
+                        XposedHelpers.callMethod(repo, "c", state.spoofProductIdHex, null)
+                    }.getOrNull()
+                    if (direct != null) return direct
+                    val list = runCatching { XposedHelpers.callMethod(repo, "g") as? Collection<*> }.getOrNull()
+                    findDtoInCollection(list)?.let { return it }
+                }
+            }
+            findClassOrNull("l7.a\$a", classLoader)?.let { supportCls ->
+                val inst = runCatching { XposedHelpers.getStaticObjectField(supportCls, "a") }.getOrNull()
+                if (inst != null) {
+                    val list = runCatching { XposedHelpers.callMethod(inst, "b") as? Collection<*> }.getOrNull()
+                    findDtoInCollection(list)?.let { return it }
+                }
+            }
+            return null
+        } finally {
+            inRawWhitelistLookup.set(prevFlag)
+        }
+    }
+
+    private fun cloneWhitelistDto(classLoader: ClassLoader, rawDto: Any): Any? {
+        val parcelClone = runCatching {
+            val p = Parcel.obtain()
+            try {
+                (rawDto as Parcelable).writeToParcel(p, 0)
+                p.setDataPosition(0)
+                @Suppress("UNCHECKED_CAST")
+                val creator = XposedHelpers.getStaticObjectField(
+                    rawDto.javaClass,
+                    "CREATOR"
+                ) as Parcelable.Creator<Any>
+                creator.createFromParcel(p)
+            } finally {
+                p.recycle()
+            }
+        }.getOrNull()
+        if (parcelClone != null) return parcelClone
+
+        return runCatching {
+            val baseCls = findClassOrNull("com.oplus.melody.common.data.a", classLoader)
+                ?: return@runCatching null
+            XposedHelpers.callStaticMethod(baseCls, "deepCopyOf", rawDto, rawDto.javaClass)
+        }.getOrNull()
+    }
+
+    private fun buildSanitizedJblDto(classLoader: ClassLoader, rawDto: Any): Any? = runCatching {
+        val cloned = cloneWhitelistDto(classLoader, rawDto) ?: return@runCatching rawDto
+        val function = runCatching { XposedHelpers.callMethod(cloned, "getFunction") }.getOrNull()
+            ?: return@runCatching cloned
+
+        for (field in UNSUPPORTED_INT_FIELDS) {
+            setIntFieldSafe(function, field, 0)
+        }
+        for (field in UNSUPPORTED_OBJECT_FIELDS) {
+            setObjectFieldSafe(function, field, null)
+        }
+
+        setIntFieldSafe(function, "batteryInfo", 1)
+        setIntFieldSafe(function, "fastDiscovery", 1)
+        setIntFieldSafe(function, "findDevice", 1)
+        setIntFieldSafe(function, "equalizer", 1)
+        setIntFieldSafe(function, "noiseReductionUIVersion", 1)
+
+        buildJblNoiseModeList(classLoader)?.let {
+            setObjectFieldSafe(function, "noiseReductionMode", it)
+        }
+        buildJblEqModeList(classLoader)?.let {
+            setObjectFieldSafe(function, "equalizerMode", it)
+        }
+        val pidHex = runCatching { XposedHelpers.callMethod(cloned, "getId") as? String }.getOrNull()
+        log("Sanitized WhitelistConfigDTO for $pidHex (personalNoise=0, multiDevicesConnect=0)")
+        cloned
+    }.onFailure { log("buildSanitizedJblDto failed: ${it.message}") }.getOrNull()
+
+    private fun buildJblNoiseModeList(classLoader: ClassLoader): ArrayList<Any>? = runCatching {
+        val nrCls = findClassOrNull(
+            "com.oplus.melody.common.data.WhitelistConfigDTO\$NoiseReductionMode",
+            classLoader
+        ) ?: return@runCatching null
+
+        fun makeMode(protocolIndex: Int, modeType: Int, children: List<Any>? = null): Any {
+            return XposedHelpers.newInstance(nrCls).also { mode ->
+                setIntFieldSafe(mode, "protocolIndex", protocolIndex)
+                setIntFieldSafe(mode, "modeType", modeType)
+                setBooleanFieldSafe(mode, "decideByEarDevice", false)
+                setObjectFieldSafe(mode, "childrenMode", children)
             }
         }
-        findClassOrNull("l7.a\$a", classLoader)?.let { supportCls ->
-            val inst = runCatching { XposedHelpers.getStaticObjectField(supportCls, "a") }.getOrNull()
-            if (inst != null) {
-                val list = runCatching { XposedHelpers.callMethod(inst, "b") as? Collection<*> }.getOrNull()
-                findDtoInCollection(list)?.let { return it }
+
+        val transChildren = arrayListOf(
+            makeMode(protocolIndex = 8, modeType = 2),
+            makeMode(protocolIndex = 9, modeType = 6)
+        )
+        arrayListOf(
+            makeMode(protocolIndex = 1, modeType = 5, children = null), // 降噪
+            makeMode(protocolIndex = 0, modeType = 1, children = null), // 关闭
+            makeMode(protocolIndex = 2, modeType = 2, children = transChildren) // 通透 + 人声增强
+        )
+    }.getOrNull()
+
+    private fun buildJblEqModeList(classLoader: ClassLoader): ArrayList<Any>? = runCatching {
+        val eqCls = findClassOrNull(
+            "com.oplus.melody.common.data.WhitelistConfigDTO\$EqualizerMode",
+            classLoader
+        ) ?: return@runCatching null
+
+        fun makeEq(protocolIndex: Int, modeType: Int, order: Int): Any {
+            return XposedHelpers.newInstance(eqCls).also { eq ->
+                setIntFieldSafe(eq, "protocolIndex", protocolIndex)
+                setIntFieldSafe(eq, "modeType", modeType)
+                setIntFieldSafe(eq, "order", order)
             }
         }
-        return null
+
+        arrayListOf(
+            makeEq(protocolIndex = 0, modeType = 22, order = 0), // 原声 (off)
+            makeEq(protocolIndex = 1, modeType = 11, order = 1), // 均衡/爵士 (jazz)
+            makeEq(protocolIndex = 2, modeType = 14, order = 2), // 纯净人声 (vocal)
+            makeEq(protocolIndex = 3, modeType = 12, order = 3), // 低音增强 (bass)
+            makeEq(protocolIndex = 4, modeType = 23, order = 4), // 澎湃动感 (club)
+            makeEq(protocolIndex = 5, modeType = 17, order = 5)  // 平衡/录音室 (studio)
+        )
+    }.getOrNull()
+
+    private fun setIntFieldSafe(target: Any, fieldName: String, value: Int) {
+        runCatching { XposedHelpers.setIntField(target, fieldName, value) }
+    }
+
+    private fun setBooleanFieldSafe(target: Any, fieldName: String, value: Boolean) {
+        runCatching { XposedHelpers.setBooleanField(target, fieldName, value) }
+    }
+
+    private fun setObjectFieldSafe(target: Any, fieldName: String, value: Any?) {
+        runCatching { XposedHelpers.setObjectField(target, fieldName, value) }
     }
 
     private fun findDtoInCollection(coll: Collection<*>?): Any? {

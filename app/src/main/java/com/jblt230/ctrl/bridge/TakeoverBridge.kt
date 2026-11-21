@@ -13,8 +13,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Coordinates foreground ViewModel vs background [JblBridgeService] ownership of
  * the single GATT control link, persists the latest snapshot, broadcasts live state
- * into ColorOS `com.oplus.melody` via LSPosed hooks, and keeps Android 16 [FluidCloudNotifier],
- * [JblBatteryWidgetProvider], and optional [EarbudsPopupOverlay] synchronized.
+ * into ColorOS `com.oplus.melody` via LSPosed hooks, and keeps Android 16 [FluidCloudNotifier]
+ * and [JblBatteryWidgetProvider] synchronized.
  */
 object TakeoverBridge {
 
@@ -60,14 +60,20 @@ object TakeoverBridge {
         val mac = state.system.deviceAddress.ifBlank { cached.mac }
         if (mac.isBlank() && !triggerPopup && !forceOverlay && !triggerMelodyPopup && !triggerMelodyCapsule) return
 
+        val bleBat = state.battery
+        val leftBat = if (bleBat != null) bleBat.left else (state.system.systemBattery ?: cached.leftBattery)
+        val rightBat = if (bleBat != null) bleBat.right else (state.system.systemBattery ?: cached.rightBattery)
+        val caseBat = if (bleBat != null) bleBat.case else cached.caseBattery
+
         val snap = CachedDeviceSnapshot(
             mac = mac,
-            leftBattery = state.battery?.left ?: state.system.systemBattery ?: cached.leftBattery,
-            rightBattery = state.battery?.right ?: state.system.systemBattery ?: cached.rightBattery,
-            caseBattery = state.battery?.case ?: cached.caseBattery,
-            leftCharging = state.battery?.leftCharging ?: cached.leftCharging,
-            rightCharging = state.battery?.rightCharging ?: cached.rightCharging,
-            caseCharging = state.battery?.caseCharging ?: cached.caseCharging,
+            leMac = cached.leMac,
+            leftBattery = leftBat,
+            rightBattery = rightBat,
+            caseBattery = caseBat,
+            leftCharging = bleBat?.leftCharging ?: cached.leftCharging,
+            rightCharging = bleBat?.rightCharging ?: cached.rightCharging,
+            caseCharging = bleBat?.caseCharging ?: cached.caseCharging,
             noiseMode = state.noiseMode.name,
             eqPresetId = state.eqPresetId,
             fwVersion = state.deviceInfo?.firmwareVersion?.ifBlank { "" } ?: cached.fwVersion
@@ -75,7 +81,7 @@ object TakeoverBridge {
         pushRawSnapshot(
             context = context,
             snap = snap,
-            deviceName = state.system.deviceName.ifBlank { "JBL Tune 230NC" },
+            deviceName = BridgeContract.cleanDisplayName(state.system.deviceName),
             controlReady = state.link is LinkState.Ready,
             triggerPopup = triggerPopup,
             forceOverlay = forceOverlay,
@@ -96,6 +102,7 @@ object TakeoverBridge {
     ) {
         val prefs = TakeoverPrefs(context)
         val cfg = prefs.loadConfig()
+        val cleanName = BridgeContract.cleanDisplayName(deviceName)
         if (snap.mac.isNotBlank()) {
             prefs.saveSnapshot(snap)
         }
@@ -107,7 +114,7 @@ object TakeoverBridge {
                 context = context,
                 cfg = cfg,
                 snap = snap,
-                deviceName = deviceName,
+                deviceName = cleanName,
                 triggerMelodyPopup = triggerMelodyPopup,
                 triggerMelodyCapsule = triggerMelodyCapsule
             )
@@ -117,19 +124,16 @@ object TakeoverBridge {
             FluidCloudNotifier.postOrUpdate(
                 context = context,
                 snap = snap,
-                deviceName = deviceName,
+                deviceName = cleanName,
                 controlReady = controlReady
             )
         }
 
-        val shouldShowOverlay = forceOverlay ||
-            (cfg.autoPopupOnConnect && triggerPopup) ||
-            EarbudsPopupOverlay.isShowing()
-        if (shouldShowOverlay) {
+        if (forceOverlay || EarbudsPopupOverlay.isShowing()) {
             EarbudsPopupOverlay.showOrUpdate(
                 context = context,
                 snap = snap,
-                deviceName = deviceName,
+                deviceName = cleanName,
                 controlReady = controlReady,
                 autoDismiss = cfg.autoDismissPopup
             )
@@ -152,6 +156,7 @@ object TakeoverBridge {
             putExtra(BridgeContract.EXTRA_MELODY_SPOOF_ENABLED, cfg.melodySpoofEnabled)
             putExtra(BridgeContract.EXTRA_MAC, snap.mac)
             putExtra(BridgeContract.EXTRA_DEVICE_NAME, deviceName)
+            putExtra(BridgeContract.EXTRA_FW_VERSION, snap.fwVersion)
             putExtra(BridgeContract.EXTRA_SPOOF_MODEL, preset.melodyName)
             putExtra(BridgeContract.EXTRA_SPOOF_PID, preset.fallbackProductIdHex)
             putExtra(BridgeContract.EXTRA_SPOOF_COLOR, preset.defaultColor)
