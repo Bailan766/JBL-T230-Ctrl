@@ -12,8 +12,8 @@ android {
         applicationId = "com.jblt230.ctrl"
         minSdk = 31
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.1.0"
+        versionCode = 5
+        versionName = "1.2.0"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
 
@@ -55,8 +55,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-
-    compileOnly("de.robv.android.xposed:api:82")
 
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")

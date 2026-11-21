@@ -209,9 +209,14 @@ class JblBridgeService : Service() {
             snap = snap,
             deviceName = classic?.name ?: "JBL TUNE230NC TWS",
             controlReady = true,
-            twsConnected = all?.twsConnected ?: info?.twsConnected ?: true,
             triggerPopup = triggerPopup
         )
+        val summary = "L ${BridgeContract.formatBatteryText(snap.leftBattery)} · " +
+            "R ${BridgeContract.formatBatteryText(snap.rightBattery)} · " +
+            "盒 ${BridgeContract.formatBatteryText(snap.caseBattery)} · " +
+            BridgeContract.noiseModeLabel(noise ?: NoiseMode.OFF)
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(NOTIFICATION_ID, buildNotification(summary))
     }
 
     private suspend fun ensureConnected(): Boolean {
@@ -237,7 +242,7 @@ class JblBridgeService : Service() {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
                 nm.createNotificationChannel(
-                    NotificationChannel(CHANNEL_ID, "ColorOS 耳机桥接", NotificationManager.IMPORTANCE_LOW)
+                    NotificationChannel(CHANNEL_ID, "JBL T230 后台接管", NotificationManager.IMPORTANCE_LOW)
                 )
             }
         }
@@ -252,7 +257,7 @@ class JblBridgeService : Service() {
         }
         return builder
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("JBL T230 Ctrl · ColorOS 桥接")
+            .setContentTitle("JBL T230 Ctrl · 独立接管中")
             .setContentText(text)
             .setOngoing(true)
             .build()

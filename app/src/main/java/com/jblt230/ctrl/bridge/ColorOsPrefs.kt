@@ -4,10 +4,9 @@ import android.content.Context
 
 data class ColorOsSpoofConfig(
     val enabled: Boolean = true,
-    val spoofModelName: String = "OPPO Enco X2",
     val autoPopupOnConnect: Boolean = true,
-    val keepLinkAlive: Boolean = false,
-    val snifferEnabled: Boolean = true
+    val autoDismissPopup: Boolean = true,
+    val keepLinkAlive: Boolean = false
 )
 
 data class CachedDeviceSnapshot(
@@ -29,19 +28,17 @@ class ColorOsPrefs(context: Context) {
 
     fun loadConfig(): ColorOsSpoofConfig = ColorOsSpoofConfig(
         enabled = prefs.getBoolean(KEY_ENABLED, true),
-        spoofModelName = prefs.getString(KEY_SPOOF_MODEL, "OPPO Enco X2") ?: "OPPO Enco X2",
         autoPopupOnConnect = prefs.getBoolean(KEY_AUTO_POPUP, true),
-        keepLinkAlive = prefs.getBoolean(KEY_KEEP_ALIVE, false),
-        snifferEnabled = prefs.getBoolean(KEY_SNIFFER, true)
+        autoDismissPopup = prefs.getBoolean(KEY_AUTO_DISMISS, true),
+        keepLinkAlive = prefs.getBoolean(KEY_KEEP_ALIVE, false)
     )
 
     fun saveConfig(cfg: ColorOsSpoofConfig) {
         prefs.edit()
             .putBoolean(KEY_ENABLED, cfg.enabled)
-            .putString(KEY_SPOOF_MODEL, cfg.spoofModelName)
             .putBoolean(KEY_AUTO_POPUP, cfg.autoPopupOnConnect)
+            .putBoolean(KEY_AUTO_DISMISS, cfg.autoDismissPopup)
             .putBoolean(KEY_KEEP_ALIVE, cfg.keepLinkAlive)
-            .putBoolean(KEY_SNIFFER, cfg.snifferEnabled)
             .apply()
     }
 
@@ -75,10 +72,9 @@ class ColorOsPrefs(context: Context) {
 
     companion object {
         private const val KEY_ENABLED = "enabled"
-        private const val KEY_SPOOF_MODEL = "spoof_model"
         private const val KEY_AUTO_POPUP = "auto_popup"
+        private const val KEY_AUTO_DISMISS = "auto_dismiss"
         private const val KEY_KEEP_ALIVE = "keep_alive"
-        private const val KEY_SNIFFER = "sniffer_enabled"
 
         private const val KEY_MAC = "snap_mac"
         private const val KEY_LEFT_BAT = "snap_left_bat"

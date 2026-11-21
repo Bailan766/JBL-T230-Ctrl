@@ -20,35 +20,18 @@ class BridgeContractTest {
     }
 
     @Test
-    fun noiseModeColorOsIndexRoundTrips() {
-        assertEquals(0, BridgeContract.noiseModeToColorOsIndex(NoiseMode.OFF))
-        assertEquals(1, BridgeContract.noiseModeToColorOsIndex(NoiseMode.AMBIENT_AWARE))
-        assertEquals(1, BridgeContract.noiseModeToColorOsIndex(NoiseMode.TALKTHRU))
-        assertEquals(2, BridgeContract.noiseModeToColorOsIndex(NoiseMode.ANC))
-
-        assertEquals(NoiseMode.OFF, BridgeContract.colorOsIndexToNoiseMode(0))
-        assertEquals(NoiseMode.AMBIENT_AWARE, BridgeContract.colorOsIndexToNoiseMode(1))
-        assertEquals(NoiseMode.ANC, BridgeContract.colorOsIndexToNoiseMode(2))
-        assertEquals(NoiseMode.OFF, BridgeContract.colorOsIndexToNoiseMode(99))
+    fun batteryTextFormattingHandlesValidNullAndCharging() {
+        assertEquals("95%", BridgeContract.formatBatteryText(95, charging = false))
+        assertEquals("⚡80%", BridgeContract.formatBatteryText(80, charging = true))
+        assertEquals("--%", BridgeContract.formatBatteryText(null, charging = false))
+        assertEquals("--%", BridgeContract.formatBatteryText(-1, charging = true))
     }
 
     @Test
-    fun productIdHexParsingAndFormatting() {
-        assertEquals(0x060414, BridgeContract.parseProductIdInt("060414"))
-        assertEquals(0x060414, BridgeContract.parseProductIdInt("0x060414"))
-        assertEquals(0x060814, BridgeContract.parseProductIdInt("invalid", fallback = 0x060814))
-        assertEquals("060414", BridgeContract.formatProductIdHex(0x060414))
-        assertEquals("030301", BridgeContract.formatProductIdHex(0x030301))
-    }
-
-    @Test
-    fun eqPresetColorOsTypeRoundTrips() {
-        val presets = listOf("off", "jazz", "vocal", "bass", "club", "studio", "extreme_bass", "custom")
-        for (preset in presets) {
-            val type = BridgeContract.eqPresetToColorOsType(preset)
-            assertEquals(preset, BridgeContract.colorOsTypeToEqPreset(type))
-        }
-        assertEquals("off", BridgeContract.colorOsTypeToEqPreset(-1))
-        assertEquals(0, BridgeContract.eqPresetToColorOsType("unknown"))
+    fun noiseModeLabelsAreHumanReadable() {
+        assertEquals("主动降噪", BridgeContract.noiseModeLabel(NoiseMode.ANC))
+        assertEquals("环境感知", BridgeContract.noiseModeLabel(NoiseMode.AMBIENT_AWARE))
+        assertEquals("自由通话", BridgeContract.noiseModeLabel(NoiseMode.TALKTHRU))
+        assertEquals("关闭", BridgeContract.noiseModeLabel(NoiseMode.OFF))
     }
 }

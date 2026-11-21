@@ -58,7 +58,6 @@ import com.jblt230.ctrl.ble.GestureFunctionGroup
 import com.jblt230.ctrl.ble.LinkState
 import com.jblt230.ctrl.ble.NoiseMode
 import com.jblt230.ctrl.ble.SmartAudioMode
-import com.jblt230.ctrl.bridge.BridgeContract
 import com.jblt230.ctrl.data.AppViewModel
 import com.jblt230.ctrl.data.FeatureStatus
 import com.jblt230.ctrl.data.FeatureUi
@@ -142,7 +141,7 @@ private fun WarningBanner(ready: Boolean) {
     ) {
         Text(
             text = if (ready)
-                "控制链路已连接。期间官方 JBL app 无法连接；退出本页或点「释放链路」即可恢复，蓝牙音频不受影响。"
+                "控制链路已接管（GATT 实时连接中）。左耳 / 右耳 / 盒电与全部协议功能均已就绪，蓝牙音频不受影响。"
             else
                 "本工具不会假装功能生效：只有「下发 → 回读一致」才标为真实，其余一律置灰或标未验证。",
             fontSize = 11.sp,
@@ -784,9 +783,22 @@ private fun ExtrasScreen(state: UiState, vm: AppViewModel) {
             ) { Text("停止蜂鸣", fontSize = 12.sp) }
         }
 
-        SectionCard("官方伴侣应用") {
-            OutlinedButton(onClick = { vm.openOfficialApp() }, modifier = Modifier.fillMaxWidth()) {
-                Text("打开官方 JBL Headphones", fontSize = 12.sp)
+        SectionCard("免 Root 独立接管 · 弹窗与同步") {
+            Text(
+                "已完全独立接管 JBL TUNE230NC TWS，无需官方 JBL app、无需 Root 或 LSPosed。",
+                fontSize = 11.sp,
+                color = Muted
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { vm.syncToColorOs(triggerPopup = true) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("预览开盖弹窗", fontSize = 11.sp) }
+                OutlinedButton(
+                    onClick = { vm.openOverlaySettings() },
+                    modifier = Modifier.weight(1f)
+                ) { Text("悬浮窗权限", fontSize = 11.sp) }
             }
         }
         Spacer(Modifier.height(20.dp))
@@ -818,37 +830,41 @@ private fun SettingsScreen(state: UiState, vm: AppViewModel) {
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).weight(1f)) {
             Spacer(Modifier.height(8.dp))
-            SectionCard("ColorOS / LSPosed 原生弹窗与欢律伪装") {
+            val overlayOk = vm.canDrawOverlays()
+            SectionCard("免 Root 接管与开盖弹窗（替代官方 JBL）") {
                 Text(
-                    "在 LSPosed 中启用本模块并勾选作用域：欢律(com.oplus.melody)、无线耳机(com.oplus.wirelesssettings)、设备连接服务(com.heytap.accessory)，重启上述应用后生效。",
+                    "纯 Android 标准权限实现：蓝牙连接或开盖重连时自动在底部弹出左耳 / 右耳 / 充电盒电量和降噪切换卡片（无需 Root / LSPosed，彻底接管原官方软件）。",
                     fontSize = 11.sp,
                     color = Muted
                 )
                 Spacer(Modifier.height(6.dp))
-                BridgeSwitchRow("启用欢律 / OPPO 耳机伪装", colorOsCfg.enabled) { checked ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (overlayOk) "悬浮窗权限：已授权" else "悬浮窗权限：未授权（开盖自动弹窗需要）",
+                        fontSize = 12.sp,
+                        color = if (overlayOk) Color(0xFF0F6B52) else Color(0xFF8A5A00),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedButton(onClick = { vm.openOverlaySettings() }) {
+                        Text(if (overlayOk) "查看" else "去授权", fontSize = 11.sp)
+                    }
+                }
+                BridgeSwitchRow("启用蓝牙连接 / 开盖后台接管", colorOsCfg.enabled) { checked ->
                     vm.updateColorOsConfig { it.copy(enabled = checked) }
                 }
-                BridgeSwitchRow("蓝牙重连 / 开盖自动弹窗", colorOsCfg.autoPopupOnConnect, enabled = colorOsCfg.enabled) { checked ->
+                BridgeSwitchRow("连接后自动弹出电量与降噪卡片", colorOsCfg.autoPopupOnConnect, enabled = colorOsCfg.enabled) { checked ->
                     vm.updateColorOsConfig { it.copy(autoPopupOnConnect = checked) }
+                }
+                BridgeSwitchRow("无操作 6.5 秒后自动收起弹窗", colorOsCfg.autoDismissPopup, enabled = colorOsCfg.enabled) { checked ->
+                    vm.updateColorOsConfig { it.copy(autoDismissPopup = checked) }
                 }
                 BridgeSwitchRow("后台持续保持 GATT 链路（独占）", colorOsCfg.keepLinkAlive, enabled = colorOsCfg.enabled) { checked ->
                     vm.updateColorOsConfig { it.copy(keepLinkAlive = checked) }
                 }
-                Spacer(Modifier.height(4.dp))
-                Text("伪装目标型号：", fontSize = 11.sp, color = Muted)
-                Spacer(Modifier.height(4.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(BridgeContract.SPOOF_PRESETS) { preset ->
-                        PillButton(
-                            text = preset.melodyName,
-                            selected = colorOsCfg.spoofModelName == preset.melodyName,
-                            enabled = colorOsCfg.enabled
-                        ) {
-                            vm.updateColorOsConfig { it.copy(spoofModelName = preset.melodyName) }
-                        }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Button(
                         onClick = { vm.syncToColorOs(triggerPopup = true) },
@@ -859,7 +875,7 @@ private fun SettingsScreen(state: UiState, vm: AppViewModel) {
                         onClick = { vm.syncToColorOs(triggerPopup = false) },
                         enabled = colorOsCfg.enabled,
                         modifier = Modifier.weight(1f)
-                    ) { Text("同步电量/ANC", fontSize = 11.sp) }
+                    ) { Text("同步三端电量", fontSize = 11.sp) }
                 }
             }
             SectionCard("协议与证据") {
@@ -888,7 +904,7 @@ private fun SettingsScreen(state: UiState, vm: AppViewModel) {
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "同一时刻只允许一条控制连接；本 app 持有期间官方 app 无法连接，音频 A2DP 不受影响。",
+                    "同一时刻只允许一条 GATT 控制连接，可完全替代原官方软件使用，音频 A2DP 与通话 HFP 不受影响。",
                     fontSize = 12.sp
                 )
             }

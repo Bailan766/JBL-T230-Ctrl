@@ -8,10 +8,12 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import com.jblt230.ctrl.system.BatteryReflection
 
 /**
- * Receives system Bluetooth connection broadcasts and remote ColorOS Melody control
- * requests, then triggers [JblBridgeService] to sync live battery/ANC/EQ state.
+ * Listens for JBL Tune 230NC Bluetooth connection broadcasts (`ACL_CONNECTED`,
+ * `A2DP`, `HFP`) on unrooted devices: immediately displays cached/system battery in
+ * [EarbudsPopupOverlay] and starts [JblBridgeService] to pull real L/R/Case telemetry.
  */
 class JblBridgeReceiver : BroadcastReceiver() {
 
@@ -42,7 +44,8 @@ class JblBridgeReceiver : BroadcastReceiver() {
             }
 
             BluetoothDevice.ACTION_ACL_CONNECTED,
-            "android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED" -> {
+            "android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED",
+            "android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED" -> {
                 val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_CONNECTED)
                 if (action != BluetoothDevice.ACTION_ACL_CONNECTED && state != BluetoothProfile.STATE_CONNECTED) {
                     return
@@ -57,7 +60,29 @@ class JblBridgeReceiver : BroadcastReceiver() {
                 val name = runCatching { device.name }.getOrNull()
                 if (!BridgeContract.isTargetJblName(name)) return
 
-                Log.i(TAG, "Target JBL device connected via BT ($name), triggering bridge sync")
+                val now = System.currentTimeMillis()
+                if (now - lastConnectTriggerMs < CONNECT_COOLDOWN_MS) return
+                lastConnectTriggerMs = now
+
+                Log.i(TAG, "JBL Tune 230NC connected ($name / $action), launching standalone takeover sync")
+
+                if (cfg.autoPopupOnConnect && !ColorOsBridge.foregroundLinkActive.get()) {
+                    val sysLevel = runCatching { BatteryReflection.read(device).level }.getOrNull()
+                    val cached = prefs.loadSnapshot().copy(mac = device.address)
+                    val initial = if (sysLevel != null && cached.leftBattery == null) {
+                        cached.copy(leftBattery = sysLevel, rightBattery = sysLevel)
+                    } else {
+                        cached
+                    }
+                    ColorOsBridge.pushRawSnapshot(
+                        context = context,
+                        snap = initial,
+                        deviceName = name ?: "JBL TUNE230NC TWS",
+                        controlReady = false,
+                        triggerPopup = true
+                    )
+                }
+
                 val svcIntent = Intent(context, JblBridgeService::class.java).apply {
                     putExtra(BridgeContract.EXTRA_CMD, BridgeContract.CMD_CONNECT_AND_SYNC)
                     putExtra(BridgeContract.EXTRA_MAC, device.address)
@@ -82,5 +107,8 @@ class JblBridgeReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "JblBridgeReceiver"
+        private const val CONNECT_COOLDOWN_MS = 10_000L
+        @Volatile
+        private var lastConnectTriggerMs = 0L
     }
 }

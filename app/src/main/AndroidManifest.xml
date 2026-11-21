@@ -13,13 +13,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-
-    <queries>
-        <package android:name="jbl.stc.com" />
-        <package android:name="com.oplus.melody" />
-        <package android:name="com.heytap.accessory" />
-        <package android:name="com.oplus.wirelesssettings" />
-    </queries>
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:allowBackup="false"
@@ -27,19 +21,6 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.JblT230Ctrl">
-
-        <meta-data
-            android:name="xposedmodule"
-            android:value="true" />
-        <meta-data
-            android:name="xposeddescription"
-            android:value="ColorOS LSPosed 桥接：将 JBL Tune 230NC TWS 伪装为 OPPO Enco 耳机，开启原生开盖弹窗、流体云、三电量显示与降噪/EQ 联动" />
-        <meta-data
-            android:name="xposedminversion"
-            android:value="82" />
-        <meta-data
-            android:name="xposedscope"
-            android:resource="@array/xposedscope" />
 
         <activity
             android:name=".MainActivity"
@@ -64,6 +45,7 @@
                 <action android:name="com.jblt230.ctrl.ACTION_REMOTE_COMMAND" />
                 <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
                 <action android:name="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED" />
+                <action android:name="android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
     </application>

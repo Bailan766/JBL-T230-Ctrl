@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jblt230.ctrl.ble.BleScanner
@@ -27,6 +28,7 @@ import com.jblt230.ctrl.bridge.BridgeContract
 import com.jblt230.ctrl.bridge.ColorOsBridge
 import com.jblt230.ctrl.bridge.ColorOsPrefs
 import com.jblt230.ctrl.bridge.ColorOsSpoofConfig
+import com.jblt230.ctrl.bridge.EarbudsPopupOverlay
 import com.jblt230.ctrl.bridge.JblBridgeService
 import com.jblt230.ctrl.logging.ProtocolLog
 import com.jblt230.ctrl.protocol.CommandTable
@@ -226,7 +228,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ColorOsBridge.foregroundLinkActive.set(false)
         transport.release()
         base.update {
-            it.copy(message = "已释放控制链路，官方 JBL app 现在可以连接（音频不受影响）。")
+            it.copy(message = "已释放控制链路，蓝牙音频 A2DP 不受影响。")
         }
     }
 
@@ -1233,12 +1235,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         system.refresh()
     }
 
-    fun openOfficialApp() {
-        val context = getApplication<Application>()
-        val launch = context.packageManager.getLaunchIntentForPackage("jbl.stc.com")
-        val intent = launch ?: Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=jbl.stc.com"))
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { context.startActivity(intent) }
+    fun canDrawOverlays(): Boolean = EarbudsPopupOverlay.canDrawOverlays(getApplication())
+
+    fun openOverlaySettings() {
+        val ctx = getApplication<Application>()
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:${ctx.packageName}")
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { ctx.startActivity(intent) }
     }
 
     fun updateColorOsConfig(transform: (ColorOsSpoofConfig) -> ColorOsSpoofConfig) {
@@ -1249,6 +1254,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun syncToColorOs(triggerPopup: Boolean = false) {
+        val ctx = getApplication<Application>()
+        if (triggerPopup && !EarbudsPopupOverlay.canDrawOverlays(ctx)) {
+            base.update {
+                it.copy(message = "请先开启“显示在其他应用上层 / 悬浮窗”权限，才能弹出免 Root 开盖卡片。")
+            }
+            openOverlaySettings()
+            return
+        }
         val current = state.value
         var mac = current.system.deviceAddress
         if (mac.isBlank()) {
@@ -1262,13 +1275,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             current
         }
-        ColorOsBridge.pushUiState(getApplication(), effective, triggerPopup = triggerPopup)
+        ColorOsBridge.pushUiState(ctx, effective, triggerPopup = triggerPopup)
+        if (!current.controlReady && !ColorOsBridge.foregroundLinkActive.get()) {
+            val svcIntent = Intent(ctx, JblBridgeService::class.java).apply {
+                putExtra(BridgeContract.EXTRA_CMD, BridgeContract.CMD_CONNECT_AND_SYNC)
+                putExtra(BridgeContract.EXTRA_TRIGGER_POPUP, triggerPopup)
+            }
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    ctx.startForegroundService(svcIntent)
+                } else {
+                    ctx.startService(svcIntent)
+                }
+            }
+        }
         base.update {
             it.copy(
                 message = if (triggerPopup) {
-                    "已向 ColorOS 欢律发送开盖弹窗与实时状态同步（需在 LSPosed 中启用本模块）。"
+                    "已弹出免 Root 实时电量与降噪快捷卡片。"
                 } else {
-                    "已同步当前耳机状态到 ColorOS 欢律。"
+                    "已触发后台同步耳机最新三端电量与状态。"
                 }
             )
         }
