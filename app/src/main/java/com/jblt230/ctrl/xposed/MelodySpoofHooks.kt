@@ -9,6 +9,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -48,16 +49,22 @@ object MelodySpoofHooks {
     private const val TAG = "JblColorOsHook"
     private const val POPUP_COOLDOWN_MS = 12_000L
     private const val CAPSULE_COOLDOWN_MS = 8_000L
+    private const val SYNC_REQUEST_COOLDOWN_MS = 5_000L
+    private const val BONDED_CHECK_TTL_MS = 5_000L
 
     private const val EVENT_SET_CMD_STATE = 1048576
     private const val EVENT_BATTERY_MSG = 1048588
+    private const val EVENT_BATTERY_HEADSET = 1048589
     private const val EVENT_BATTERY = 1048591
     private const val EVENT_CONNECT_STATE = 1048592
     private const val EVENT_HEADSET_STATE = 1048594
     private const val EVENT_A2DP_STATE = 1048595
     private const val EVENT_STATUS = 1048598
+    private const val EVENT_VERSION = 1048599
+    private const val EVENT_HEADSET_VERSION = 1048600
     private const val EVENT_SWITCH_NOISE_REDUCTION = 1048604
     private const val EVENT_SUPPORT_NOISE_REDUCTION = 1048605
+    private const val EVENT_COLOR_ID = 1048614
     private const val EVENT_NOISE_MODE = 1048616
     private const val EVENT_EQ_MODE = 1048617
     private const val EVENT_CAPABILITY_READY = 1048649
@@ -65,6 +72,12 @@ object MelodySpoofHooks {
     private const val RSP_FIND_MODE = 33792
     private const val RSP_NOISE_REDUCTION = 33796
     private const val RSP_EQ_MODE = 33798
+
+    private val JBL_WHITELIST_NAMES = listOf(
+        "JBL TUNE230NC TWS",
+        "JBL TUNE230NC TWS-LE",
+        "JBL Tune 230NC"
+    )
 
     // Capability IDs for DetailMainViewModel / K (deliberately omits 265 = ear-wear check).
     private val JBL_CAPABILITIES = arrayListOf(1024, 1028, 1030)
@@ -123,6 +136,9 @@ object MelodySpoofHooks {
     private var isMelodyFgProcess: Boolean = false
 
     @Volatile
+    private var isWirelessSettingsProcess: Boolean = false
+
+    @Volatile
     private var lastFullInjectKey: String = ""
 
     @Volatile
@@ -130,6 +146,15 @@ object MelodySpoofHooks {
 
     @Volatile
     private var lastEmittedState: SpoofState? = null
+
+    @Volatile
+    private var lastBondedCheckMs: Long = 0L
+
+    @Volatile
+    private var lastBondedJblFound: Boolean = false
+
+    @Volatile
+    private var lastSyncRequestMs: Long = 0L
 
     private data class SpoofState(
         val enabled: Boolean = true,
@@ -165,10 +190,15 @@ object MelodySpoofHooks {
             packageName == BridgeContract.PKG_MELODY && processName == BridgeContract.PKG_MELODY
         isMelodyFgProcess =
             packageName == BridgeContract.PKG_MELODY && processName != BridgeContract.PKG_MELODY
+        isWirelessSettingsProcess = packageName == BridgeContract.PKG_WIRELESS_SETTINGS
 
-        log("Installing MelodySpoofHooks in $packageName (proc=$processName, main=$isMelodyMainProcess, fg=$isMelodyFgProcess)")
+        log("Installing MelodySpoofHooks in $packageName (proc=$processName, main=$isMelodyMainProcess, fg=$isMelodyFgProcess, ws=$isWirelessSettingsProcess)")
 
         hookApplicationCreate(classLoader, packageName)
+        if (isWirelessSettingsProcess) {
+            hookWirelessSettingsWhitelist(classLoader)
+            return
+        }
         hookWhitelistLookups(classLoader)
         if (isMelodyMainProcess) {
             hookBroadcastReceiver(classLoader)
@@ -190,16 +220,16 @@ object MelodySpoofHooks {
                         if (appClassLoader == null) {
                             appClassLoader = app.classLoader
                         }
-                        if (packageName == BridgeContract.PKG_MELODY) {
+                        if (packageName == BridgeContract.PKG_MELODY || packageName == BridgeContract.PKG_WIRELESS_SETTINGS) {
                             registerSyncReceiverIfNeeded(app.applicationContext)
-                            if (isMelodyMainProcess) {
-                                notifySystemWhitelistChanged(app.applicationContext, state.spoofProductIdHex)
-                                sendHookAck(
-                                    app.applicationContext,
-                                    "boot_ready",
-                                    "欢律主进程 Hook 已就绪"
-                                )
-                            }
+                        }
+                        if (packageName == BridgeContract.PKG_MELODY && isMelodyMainProcess) {
+                            notifySystemWhitelistChanged(app.applicationContext, state.spoofProductIdHex)
+                            sendHookAck(
+                                app.applicationContext,
+                                "boot_ready",
+                                "欢律主进程 Hook 已就绪"
+                            )
                         }
                     }
                 }
@@ -255,8 +285,15 @@ object MelodySpoofHooks {
             eqType = intent.getIntExtra(BridgeContract.EXTRA_EQ_TYPE, prev.eqType)
         )
         state = updated
-        if (prev.spoofProductIdHex != updated.spoofProductIdHex) {
+        if (prev.spoofProductIdHex != updated.spoofProductIdHex || prev.enabled != updated.enabled) {
             sanitizedDtoCache.clear()
+            val loader = appClassLoader ?: context.classLoader
+            if (isMelodyFgProcess) {
+                clearMelodyFgWhitelistCache(loader)
+            }
+            if (isWirelessSettingsProcess) {
+                invalidateWirelessSettingsCache(loader)
+            }
         }
 
         if (isMelodyFgProcess || !isMelodyMainProcess) {
@@ -302,6 +339,79 @@ object MelodySpoofHooks {
         }
     }
 
+    private fun clearMelodyFgWhitelistCache(classLoader: ClassLoader) {
+        runCatching {
+            val abstractRepoCls = findClassOrNull("S8.a", classLoader) ?: return@runCatching
+            val repo = XposedHelpers.callStaticMethod(abstractRepoCls, "f") ?: return@runCatching
+            if (repo.javaClass.name == "S8.b") {
+                @Suppress("UNCHECKED_CAST")
+                (XposedHelpers.getObjectField(repo, "d") as? MutableMap<*, *>)?.clear()
+                XposedHelpers.setObjectField(repo, "f", null)
+                log("Cleared S8.b whitelist cache in :fg process")
+            }
+        }.onFailure { log("clearMelodyFgWhitelistCache skipped: ${it.message}") }
+    }
+
+    private fun invalidateWirelessSettingsCache(classLoader: ClassLoader) {
+        runCatching {
+            findClassOrNull("com.oplus.wirelesssettings.api.MelodyCacheClient", classLoader)?.let { cls ->
+                XposedHelpers.callStaticMethod(cls, "invalidateEarsWhitelist")
+                log("Invalidated WirelessSettings MelodyCacheClient cache")
+            }
+        }.onFailure { log("invalidateWirelessSettingsCache skipped: ${it.message}") }
+    }
+
+    private fun hookWirelessSettingsWhitelist(classLoader: ClassLoader) {
+        val clientCls = findClassOrNull("com.oplus.wirelesssettings.api.MelodyCacheClient", classLoader)
+            ?: return
+        val resultCls = findClassOrNull("com.oplus.wirelesssettings.api.EarsWhitelistResult", classLoader)
+            ?: return
+        val rowCls = findClassOrNull("com.oplus.wirelesssettings.api.EarsWhitelistRow", classLoader)
+            ?: return
+
+        hookMethodSafe(clientCls, "queryEarsWhitelist", Context::class.java) { param ->
+            patchWirelessSettingsResult(resultCls, rowCls, param.result)?.let { param.result = it }
+        }
+        hookMethodSafe(clientCls, "queryEarsWhitelist", Context::class.java, Array<String>::class.java) { param ->
+            patchWirelessSettingsResult(resultCls, rowCls, param.result)?.let { param.result = it }
+        }
+        log("Hooked WirelessSettings MelodyCacheClient.queryEarsWhitelist")
+    }
+
+    private fun patchWirelessSettingsResult(
+        resultCls: Class<*>,
+        rowCls: Class<*>,
+        origResult: Any?
+    ): Any? = runCatching {
+        if (!state.enabled) return@runCatching null
+        @Suppress("UNCHECKED_CAST")
+        val existing = (origResult?.let {
+            runCatching { XposedHelpers.callMethod(it, "getRows") as? List<*> }.getOrNull()
+        }).orEmpty().filterNotNull()
+
+        val existingNames = existing.mapNotNull { row ->
+            runCatching { XposedHelpers.callMethod(row, "getString", "name") as? String }.getOrNull()?.uppercase()
+        }.toSet()
+        if (JBL_WHITELIST_NAMES.all { it.uppercase() in existingNames }) {
+            return@runCatching null
+        }
+
+        val combined = ArrayList<Any>(existing.size + JBL_WHITELIST_NAMES.size)
+        combined.addAll(existing)
+        val pidUpper = state.spoofProductIdHex.uppercase()
+        for (jblName in JBL_WHITELIST_NAMES) {
+            if (jblName.uppercase() !in existingNames) {
+                val map = hashMapOf(
+                    "name" to jblName,
+                    "product_id" to pidUpper,
+                    "support_wear_check" to "0"
+                )
+                combined.add(XposedHelpers.newInstance(rowCls, map))
+            }
+        }
+        XposedHelpers.newInstance(resultCls, combined)
+    }.onFailure { log("patchWirelessSettingsResult failed: ${it.message}") }.getOrNull()
+
     private fun hookWhitelistLookups(classLoader: ClassLoader) {
         val concreteRepoClasses = listOf(
             "S8.b",
@@ -314,6 +424,7 @@ object MelodySpoofHooks {
                 val mac = param.args.firstOrNull() as? String
                 if (isTargetMac(mac)) {
                     resolveSpoofWhitelistDto(classLoader)?.let { param.result = it }
+                    if (mac != null) requestFreshSyncIfStale(mac)
                 }
             }
             hookMethodSafe(cls, "c", String::class.java, String::class.java) { param ->
@@ -322,11 +433,31 @@ object MelodySpoofHooks {
                 val name = param.args.getOrNull(1) as? String
                 val isTargetPidWithJblActive = !pid.isNullOrBlank() &&
                     pid.equals(state.spoofProductIdHex, ignoreCase = true) &&
-                    !state.targetMac.isNullOrBlank()
+                    hasActiveOrBondedJbl()
                 if (BridgeContract.isTargetJblName(name) || isTargetPidWithJblActive ||
                     (param.result == null && !pid.isNullOrBlank() && pid.equals("000000", ignoreCase = true) && isTargetDevice(null, name))
                 ) {
                     resolveSpoofWhitelistDto(classLoader)?.let { param.result = it }
+                }
+            }
+            hookMethodSafe(cls, "g") { param ->
+                if (!state.enabled || inRawWhitelistLookup.get() == true || !hasActiveOrBondedJbl()) return@hookMethodSafe
+                val list = param.result as? List<*> ?: return@hookMethodSafe
+                val targetPid = state.spoofProductIdHex
+                val sanitized = resolveSpoofWhitelistDto(classLoader) ?: return@hookMethodSafe
+                var replaced = false
+                val copied = ArrayList<Any?>(list.size)
+                for (item in list) {
+                    val id = item?.let { runCatching { XposedHelpers.callMethod(it, "getId") as? String }.getOrNull() }
+                    if (id != null && id.equals(targetPid, ignoreCase = true)) {
+                        copied.add(sanitized)
+                        replaced = true
+                    } else {
+                        copied.add(item)
+                    }
+                }
+                if (replaced) {
+                    param.result = copied
                 }
             }
             hookMethodSafe(cls, "k") { param ->
@@ -346,7 +477,7 @@ object MelodySpoofHooks {
                 val name = param.args.getOrNull(1) as? String
                 val targetPidInt = BridgeContract.parseProductIdInt(state.spoofProductIdHex)
                 if (BridgeContract.isTargetJblName(name) ||
-                    (pidInt == targetPidInt && !state.targetMac.isNullOrBlank())
+                    (pidInt == targetPidInt && hasActiveOrBondedJbl())
                 ) {
                     resolveSpoofWhitelistDto(classLoader)?.let { param.result = it }
                 }
@@ -380,7 +511,7 @@ object MelodySpoofHooks {
                 val name = param.args.getOrNull(2) as? String
                 val isTargetPidActive = !pid.isNullOrBlank() &&
                     pid.equals(state.spoofProductIdHex, ignoreCase = true) &&
-                    !state.targetMac.isNullOrBlank()
+                    hasActiveOrBondedJbl()
                 if (BridgeContract.isTargetJblName(name) || isTargetPidActive) {
                     param.result = resolveSpoofWhitelistDto(classLoader) ?: findDtoInCollection(coll)
                 }
@@ -407,20 +538,20 @@ object MelodySpoofHooks {
         val existingNames = existing.mapNotNull {
             runCatching { XposedHelpers.callMethod(it, "getName") as? String }.getOrNull()?.uppercase()
         }.toSet()
-        val jblNames = listOf("JBL TUNE230NC TWS", "JBL TUNE230NC TWS-LE", "JBL Tune 230NC")
-        if (jblNames.all { it.uppercase() in existingNames }) {
+        if (JBL_WHITELIST_NAMES.all { it.uppercase() in existingNames }) {
             return@runCatching null
         }
 
-        val combined = ArrayList<Any>(existing.size + jblNames.size)
+        val combined = ArrayList<Any>(existing.size + JBL_WHITELIST_NAMES.size)
         combined.addAll(existing)
         val pidUpper = pidHex.uppercase()
-        for (name in jblNames) {
+        for (name in JBL_WHITELIST_NAMES) {
             if (name.uppercase() !in existingNames) {
                 combined.add(XposedHelpers.newInstance(itemCls, pidUpper, name, 0))
             }
         }
-        XposedHelpers.newInstance(snapCls, version, combined)
+        val bumpedVersion = BridgeContract.bumpOutsideSnapshotVersion(version, pidUpper)
+        XposedHelpers.newInstance(snapCls, bumpedVersion, combined)
     }.onFailure { log("appendJblToOutsideSnapshot failed: ${it.message}") }.getOrNull()
 
     private fun notifySystemWhitelistChanged(context: Context, pidHex: String) {
@@ -433,7 +564,13 @@ object MelodySpoofHooks {
                 context.classLoader
             ) ?: return@runCatching
             XposedHelpers.callStaticMethod(helperCls, "sendWhiteListChangedBroadCast", context)
-            log("Broadcasted WirelessSettingHelper whitelist change for JBL ($pidHex)")
+            val authority = runCatching {
+                findClassOrNull("com.oplus.melody.common.util.V", context.classLoader)
+                    ?.let { XposedHelpers.callStaticMethod(it, "d", context) as? String }
+            }.getOrNull()?.takeIf { it.isNotBlank() } ?: "com.oplus.melody.providers.MelodyProvider"
+            val uri = Uri.withAppendedPath(Uri.parse("content://$authority"), "ears_whitelist")
+            context.contentResolver.notifyChange(uri, null, 0)
+            log("Broadcasted & notified $uri whitelist change for JBL ($pidHex)")
         }.onFailure { log("sendWhiteListChangedBroadCast skipped: ${it.message}") }
     }
 
@@ -441,13 +578,42 @@ object MelodySpoofHooks {
         val repoImplCls = findClassOrNull("com.oplus.melody.model.repository.earphone.U", classLoader)
             ?: return
         hookMethodSafe(repoImplCls, "g1", String::class.java) { param ->
-            if (!state.enabled || param.result != null) return@hookMethodSafe
+            if (!state.enabled) return@hookMethodSafe
             val mac = param.args.firstOrNull() as? String ?: return@hookMethodSafe
             if (!isTargetMac(mac)) return@hookMethodSafe
+            requestFreshSyncIfStale(mac)
+            if (param.result != null) return@hookMethodSafe
             val dto = synthesizeEarphoneDto(classLoader, mac.uppercase(), state)
             if (dto != null) {
                 param.result = dto
             }
+        }
+    }
+
+    @Suppress("MissingPermission")
+    private fun hasActiveOrBondedJbl(): Boolean {
+        if (!state.targetMac.isNullOrBlank()) return true
+        val now = System.currentTimeMillis()
+        if (now - lastBondedCheckMs < BONDED_CHECK_TTL_MS) return lastBondedJblFound
+        val found = runCatching {
+            BluetoothAdapter.getDefaultAdapter()?.bondedDevices.orEmpty().firstOrNull { dev ->
+                BridgeContract.isTargetJblName(safeDeviceName(dev))
+            }?.also { dev ->
+                learnTargetMac(dev.address)
+            } != null
+        }.getOrDefault(false)
+        lastBondedCheckMs = now
+        lastBondedJblFound = found
+        return found
+    }
+
+    private fun requestFreshSyncIfStale(mac: String) {
+        if (state.leftBattery >= 0) return
+        val now = System.currentTimeMillis()
+        if (now - lastSyncRequestMs < SYNC_REQUEST_COOLDOWN_MS) return
+        lastSyncRequestMs = now
+        appContext?.let {
+            sendRemoteCommand(it, mac.uppercase(), BridgeContract.CMD_CONNECT_AND_SYNC)
         }
     }
 
@@ -475,14 +641,11 @@ object MelodySpoofHooks {
         current: SpoofState
     ): Any? = runCatching {
         val entityCls = findClassOrNull("com.oplus.melody.model.db.C", classLoader) ?: return@runCatching null
-        val statusDoCls = findClassOrNull(
-            "com.oplus.melody.model.repository.earphone.EarphoneStatusDO",
-            classLoader
-        ) ?: return@runCatching null
-        val batItemCls = findClassOrNull(
-            "com.oplus.melody.model.repository.earphone.EarphoneStatusDO\$a",
-            classLoader
-        )
+        val statusDoCls = findClassOrNull("com.oplus.melody.model.repository.earphone.V", classLoader)
+            ?: findClassOrNull("com.oplus.melody.model.repository.earphone.EarphoneStatusDO", classLoader)
+            ?: return@runCatching null
+        val batItemCls = findClassOrNull("com.oplus.melody.model.repository.earphone.V\$a", classLoader)
+            ?: findClassOrNull("com.oplus.melody.model.repository.earphone.EarphoneStatusDO\$a", classLoader)
         val earphoneDtoCls = findClassOrNull(
             "com.oplus.melody.model.repository.earphone.EarphoneDTO",
             classLoader
@@ -495,9 +658,9 @@ object MelodySpoofHooks {
         val modelName = dto?.let {
             runCatching { XposedHelpers.callMethod(it, "getName") as? String }.getOrNull()
         } ?: current.spoofModel
-        val color = dto?.let {
+        val color = (dto?.let {
             runCatching { XposedHelpers.callMethod(it, "getDefaultColor") as? Int }.getOrNull()
-        } ?: current.spoofColor
+        } ?: current.spoofColor).takeIf { it >= 0 } ?: 0
 
         val entity = XposedHelpers.newInstance(entityCls)
         XposedHelpers.callMethod(entity, "setMacAddress", mac)
@@ -521,6 +684,11 @@ object MelodySpoofHooks {
         }
         XposedHelpers.callMethod(statusDo, "setNoiseReductionModeIndex", current.noiseIndex)
         XposedHelpers.callMethod(statusDo, "setEqType", current.eqType)
+        buildDeviceVersionDtoList(classLoader, current.fwVersion)?.takeIf { it.isNotEmpty() }?.let { verDtos ->
+            XposedHelpers.callMethod(statusDo, "setDeviceVersionList", verDtos)
+            XposedHelpers.callMethod(statusDo, "setHeadsetVersionList", verDtos)
+            XposedHelpers.callMethod(statusDo, "setVersionListReceived", true)
+        }
 
         if (batItemCls != null) {
             fun makeBat(lvl: Int, chg: Boolean): Any? {
@@ -745,6 +913,24 @@ object MelodySpoofHooks {
                                 param.result = null
                             }
 
+                            1043 -> {
+                                getOrCreateDeviceInfo(classLoader, mac, state)?.let {
+                                    applySnapshotToDeviceInfo(classLoader, it, state)
+                                    if (state.fwVersion.isNotBlank()) {
+                                        emitSingleEvent(classLoader, EVENT_HEADSET_VERSION, it)
+                                    }
+                                }
+                                param.result = null
+                            }
+
+                            1046 -> {
+                                getOrCreateDeviceInfo(classLoader, mac, state)?.let {
+                                    applySnapshotToDeviceInfo(classLoader, it, state)
+                                    emitSingleEvent(classLoader, EVENT_BATTERY_HEADSET, it)
+                                }
+                                param.result = null
+                            }
+
                             1017, 1022, 1026, 1039, 1045, 1065 -> {
                                 // Safely consume unsupported OPPO SPP query opcodes on JBL MAC.
                                 param.result = null
@@ -832,15 +1018,16 @@ object MelodySpoofHooks {
                     val title = dto?.let {
                         runCatching { XposedHelpers.callMethod(it, "getName") as? String }.getOrNull()
                     } ?: current.spoofModel
-                    val color = dto?.let {
+                    val color = (dto?.let {
                         runCatching { XposedHelpers.callMethod(it, "getDefaultColor") as? Int }.getOrNull()
-                    } ?: current.spoofColor
+                    } ?: current.spoofColor).takeIf { it >= 0 } ?: 0
 
                     runCatching {
                         findClassOrNull("com.oplus.melody.model.repository.earphone.c", classLoader)?.let { earRepoCls ->
                             val repo = XposedHelpers.callStaticMethod(earRepoCls, "G")
                             if (repo != null) {
                                 XposedHelpers.callMethod(repo, "T", color, mac, title, pidHex)
+                                XposedHelpers.callMethod(repo, "U", color, mac, title, pidHex)
                             }
                         }
                     }
@@ -851,6 +1038,31 @@ object MelodySpoofHooks {
                             if (dl != null) {
                                 XposedHelpers.callMethod(dl, "m", color, pidHex)
                             }
+                        }
+                    }
+
+                    runCatching {
+                        findClassOrNull("w8.a\$a", classLoader)?.let { detailComp ->
+                            val detailRepo = XposedHelpers.callStaticMethod(detailComp, "a")
+                            if (detailRepo != null) {
+                                XposedHelpers.callMethod(detailRepo, "a", color, pidHex)
+                                XposedHelpers.callMethod(detailRepo, "b", color, pidHex)
+                            }
+                        }
+                    }
+                }
+
+                if (current.leftBattery in 0..100 || current.rightBattery in 0..100) {
+                    runCatching {
+                        findClassOrNull("j7.d", classLoader)?.let { batPrefCls ->
+                            XposedHelpers.callStaticMethod(
+                                batPrefCls,
+                                "b",
+                                current.caseBattery.coerceIn(0, 100),
+                                current.leftBattery.coerceIn(0, 100),
+                                current.rightBattery.coerceIn(0, 100),
+                                mac
+                            )
                         }
                     }
                 }
@@ -939,12 +1151,37 @@ object MelodySpoofHooks {
         return list
     }
 
+    private fun buildVersionInfoList(classLoader: ClassLoader, fwVersion: String): ArrayList<Any> {
+        val list = ArrayList<Any>(3)
+        val triplet = BridgeContract.splitFirmwareTriplet(fwVersion) ?: return list
+        val verCls = findClassOrNull("com.oplus.melody.btsdk.api.data.VersionInfo", classLoader)
+            ?: return list
+        runCatching {
+            list.add(XposedHelpers.newInstance(verCls, 1, 2, triplet.first))
+            list.add(XposedHelpers.newInstance(verCls, 2, 2, triplet.second))
+            list.add(XposedHelpers.newInstance(verCls, 3, 2, triplet.third))
+        }
+        return list
+    }
+
+    private fun buildDeviceVersionDtoList(classLoader: ClassLoader, fwVersion: String): List<*>? {
+        val versions = buildVersionInfoList(classLoader, fwVersion)
+        if (versions.isEmpty()) return null
+        val dtoCls = findClassOrNull(
+            "com.oplus.melody.model.repository.earphone.DeviceVersionDTO",
+            classLoader
+        ) ?: return null
+        return runCatching {
+            XposedHelpers.callStaticMethod(dtoCls, "fromVersionList", versions) as? List<*>
+        }.getOrNull()
+    }
+
     private fun applySnapshotToDeviceInfo(classLoader: ClassLoader, info: Any, current: SpoofState) {
         val dto = resolveSpoofWhitelistDto(classLoader)
         val pid = resolveProductIdInt(classLoader, current)
-        val color = dto?.let {
+        val color = (dto?.let {
             runCatching { XposedHelpers.callMethod(it, "getDefaultColor") as? Int }.getOrNull()
-        } ?: current.spoofColor
+        } ?: current.spoofColor).takeIf { it >= 0 } ?: 0
         val type = dto?.let {
             runCatching { XposedHelpers.callMethod(it, "getType") as? String }.getOrNull()
         } ?: current.spoofType
@@ -973,17 +1210,9 @@ object MelodySpoofHooks {
             }
         }
 
-        if (current.fwVersion.isNotBlank()) {
-            val verCls = findClassOrNull("com.oplus.melody.btsdk.api.data.VersionInfo", classLoader)
-            if (verCls != null) {
-                runCatching {
-                    val versions = ArrayList<Any>(2).apply {
-                        add(XposedHelpers.newInstance(verCls, 1, 2, current.fwVersion))
-                        add(XposedHelpers.newInstance(verCls, 2, 2, current.fwVersion))
-                    }
-                    XposedHelpers.callMethod(info, "setVersionInfo", versions)
-                }
-            }
+        val versions = buildVersionInfoList(classLoader, current.fwVersion)
+        if (versions.isNotEmpty()) {
+            runCatching { XposedHelpers.callMethod(info, "setVersionInfo", versions) }
         }
 
         val batteryList = buildBatteryInfoList(classLoader, current)
@@ -1043,13 +1272,14 @@ object MelodySpoofHooks {
             classLoader
         ) ?: return
 
-        val events = ArrayList<Int>(11)
+        val events = ArrayList<Int>(15)
         if (full || prev == null) {
             events.addAll(
                 listOf(
                     EVENT_CONNECT_STATE,
                     EVENT_HEADSET_STATE,
                     EVENT_A2DP_STATE,
+                    EVENT_COLOR_ID,
                     EVENT_CAPABILITY_READY,
                     EVENT_SUPPORT_NOISE_REDUCTION,
                     EVENT_SWITCH_NOISE_REDUCTION,
@@ -1060,6 +1290,10 @@ object MelodySpoofHooks {
                     EVENT_EQ_MODE
                 )
             )
+            if (current.fwVersion.isNotBlank()) {
+                events.add(EVENT_VERSION)
+                events.add(EVENT_HEADSET_VERSION)
+            }
         } else {
             val batChanged = prev.leftBattery != current.leftBattery ||
                 prev.rightBattery != current.rightBattery ||
@@ -1069,12 +1303,17 @@ object MelodySpoofHooks {
                 prev.caseCharging != current.caseCharging
             if (batChanged) {
                 events.add(EVENT_BATTERY)
+                events.add(EVENT_BATTERY_HEADSET)
             }
             if (prev.noiseIndex != current.noiseIndex) {
                 events.add(EVENT_NOISE_MODE)
             }
             if (prev.eqType != current.eqType) {
                 events.add(EVENT_EQ_MODE)
+            }
+            if (prev.fwVersion != current.fwVersion && current.fwVersion.isNotBlank()) {
+                events.add(EVENT_VERSION)
+                events.add(EVENT_HEADSET_VERSION)
             }
         }
         for (code in events) {
@@ -1122,9 +1361,9 @@ object MelodySpoofHooks {
                 val pidHex = (dto?.let {
                     runCatching { XposedHelpers.callMethod(it, "getId") as? String }.getOrNull()
                 } ?: current.spoofProductIdHex).uppercase()
-                val color = dto?.let {
+                val color = (dto?.let {
                     runCatching { XposedHelpers.callMethod(it, "getDefaultColor") as? Int }.getOrNull()
-                } ?: current.spoofColor
+                } ?: current.spoofColor).takeIf { it >= 0 } ?: 0
                 val title = dto?.let {
                     runCatching { XposedHelpers.callMethod(it, "getName") as? String }.getOrNull()
                 } ?: current.spoofModel
@@ -1167,9 +1406,9 @@ object MelodySpoofHooks {
             val pidHex = (dto?.let {
                 runCatching { XposedHelpers.callMethod(it, "getId") as? String }.getOrNull()
             } ?: current.spoofProductIdHex).uppercase()
-            val color = dto?.let {
+            val color = (dto?.let {
                 runCatching { XposedHelpers.callMethod(it, "getDefaultColor") as? Int }.getOrNull()
-            } ?: current.spoofColor
+            } ?: current.spoofColor).takeIf { it >= 0 } ?: 0
             val title = dto?.let {
                 runCatching { XposedHelpers.callMethod(it, "getName") as? String }.getOrNull()
             } ?: current.spoofModel

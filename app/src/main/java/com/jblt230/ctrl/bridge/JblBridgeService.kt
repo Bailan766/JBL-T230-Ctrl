@@ -78,13 +78,18 @@ class JblBridgeService : Service() {
         val triggerPopup = intent?.getBooleanExtra(BridgeContract.EXTRA_TRIGGER_POPUP, false) ?: false
         val noiseStr = intent?.getStringExtra(BridgeContract.EXTRA_NOISE_MODE)
         val eqPreset = intent?.getStringExtra(BridgeContract.EXTRA_EQ_PRESET)
-        val findEnabled = intent?.getBooleanExtra(BridgeContract.EXTRA_FIND_LEFT, false) ?: false
+        val findLeft = intent?.getBooleanExtra(BridgeContract.EXTRA_FIND_LEFT, false) ?: false
+        val findRight = if (intent?.hasExtra(BridgeContract.EXTRA_FIND_RIGHT) == true) {
+            intent.getBooleanExtra(BridgeContract.EXTRA_FIND_RIGHT, false)
+        } else {
+            findLeft
+        }
 
         idleReleaseJob?.cancel()
         scope.launch {
             try {
                 mutex.withLock {
-                    handleCommand(cmd, triggerPopup, noiseStr, eqPreset, findEnabled)
+                    handleCommand(cmd, triggerPopup, noiseStr, eqPreset, findLeft, findRight)
                 }
             } catch (e: Throwable) {
                 Log.w(TAG, "Bridge command $cmd failed: ${e.message}", e)
@@ -112,7 +117,8 @@ class JblBridgeService : Service() {
         triggerPopup: Boolean,
         noiseStr: String?,
         eqPreset: String?,
-        findEnabled: Boolean
+        findLeft: Boolean,
+        findRight: Boolean
     ) {
         if (TakeoverBridge.foregroundLinkActive.get()) {
             if (cmd != BridgeContract.CMD_CONNECT_AND_SYNC) {
@@ -121,7 +127,8 @@ class JblBridgeService : Service() {
                     putExtra(BridgeContract.EXTRA_CMD, cmd)
                     putExtra(BridgeContract.EXTRA_NOISE_MODE, noiseStr)
                     putExtra(BridgeContract.EXTRA_EQ_PRESET, eqPreset)
-                    putExtra(BridgeContract.EXTRA_FIND_LEFT, findEnabled)
+                    putExtra(BridgeContract.EXTRA_FIND_LEFT, findLeft)
+                    putExtra(BridgeContract.EXTRA_FIND_RIGHT, findRight)
                 })
             }
             return
@@ -177,14 +184,14 @@ class JblBridgeService : Service() {
                 }
             }
             BridgeContract.CMD_FIND_BUDS -> {
-                val frame = FrameCodec.buildFindMyBuds(left = findEnabled, right = findEnabled)
+                val frame = FrameCodec.buildFindMyBuds(left = findLeft, right = findRight)
                 queue.writeFrameAndVerify(
                     frameHex = FrameCodec.hex(frame),
                     replyCmd = 0x00,
                     readbackName = "find_buds_read"
                 ) { f ->
                     val s = FrameCodec.parseFindMyBuds(f) ?: return@writeFrameAndVerify false
-                    s.leftBeeping == findEnabled && s.rightBeeping == findEnabled
+                    s.leftBeeping == findLeft && s.rightBeeping == findRight
                 }
             }
         }

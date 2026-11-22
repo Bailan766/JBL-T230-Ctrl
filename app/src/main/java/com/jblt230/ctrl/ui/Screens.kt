@@ -11,6 +11,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -1395,9 +1396,10 @@ private fun SettingsScreen(state: UiState, vm: AppViewModel) {
                     if (steps.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
                         steps.forEach { s ->
+                            val dark = isSystemInDarkTheme()
                             val (bg, fg) = when (s.status) {
-                                DiagStatus.PASS -> cs.secondaryContainer to Color(0xFF34D399)
-                                DiagStatus.WARN -> cs.tertiaryContainer to Color(0xFFFBBF24)
+                                DiagStatus.PASS -> if (dark) Color(0xFF123526) to Color(0xFF34D399) else Color(0xFFD1FAE5) to Color(0xFF047857)
+                                DiagStatus.WARN -> if (dark) Color(0xFF3B2A0A) to Color(0xFFFBBF24) else Color(0xFFFEF3C7) to Color(0xFFB45309)
                                 DiagStatus.FAIL -> cs.errorContainer to cs.onErrorContainer
                                 DiagStatus.SKIP -> cs.surfaceContainerHighest to cs.onSurfaceVariant
                             }

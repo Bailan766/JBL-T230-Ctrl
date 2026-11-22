@@ -204,4 +204,26 @@ object BridgeContract {
         7 -> "custom"
         else -> "off"
     }
+
+    /**
+     * Splits a headset firmware version string (e.g. `"3.7.0"` or `"v3.7"`) into 3 purely numeric
+     * segments (`^[0-9]*$`) expected by ColorOS Melody's `W.A()` parser (`left.right.box`).
+     */
+    fun splitFirmwareTriplet(fwVersion: String?): Triple<String, String, String>? {
+        if (fwVersion.isNullOrBlank()) return null
+        val nums = Regex("\\d+").findAll(fwVersion).map { it.value }.toList()
+        if (nums.isEmpty()) return null
+        return Triple(nums[0], nums.getOrElse(1) { "0" }, nums.getOrElse(2) { "0" })
+    }
+
+    /**
+     * Returns a distinct outside-snapshot version string so ColorOS `MelodyAliveProvider` /
+     * `MelodyCacheClient` never short-circuits with `not_modified = 1` when JBL rows are injected.
+     */
+    fun bumpOutsideSnapshotVersion(origVersion: String?, pidHex: String): String {
+        val cleanOrig = origVersion?.trim().orEmpty()
+        val numeric = cleanOrig.toLongOrNull()
+        if (numeric != null) return (numeric + 777L).toString()
+        return "${cleanOrig.ifBlank { "1" }}_jbl_${pidHex.trim().uppercase()}"
+    }
 }

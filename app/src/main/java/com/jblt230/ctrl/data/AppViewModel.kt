@@ -119,9 +119,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     if (preset != null) setEqPreset(preset)
                 }
                 BridgeContract.CMD_FIND_BUDS -> {
-                    val enable = intent.getBooleanExtra(BridgeContract.EXTRA_FIND_LEFT, false)
-                    if (enable) {
-                        base.update { it.copy(findBudsPendingLeft = true, findBudsPendingRight = true) }
+                    val findLeft = intent.getBooleanExtra(BridgeContract.EXTRA_FIND_LEFT, false)
+                    val findRight = if (intent.hasExtra(BridgeContract.EXTRA_FIND_RIGHT)) {
+                        intent.getBooleanExtra(BridgeContract.EXTRA_FIND_RIGHT, false)
+                    } else {
+                        findLeft
+                    }
+                    if (findLeft || findRight) {
+                        base.update { it.copy(findBudsPendingLeft = findLeft, findBudsPendingRight = findRight) }
                         confirmFindMyBuds()
                     } else {
                         stopFindMyBuds()
@@ -426,8 +431,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 noiseMode = resolvedMode,
                 noiseStatus = status,
                 noiseDetail = if (mode != null)
-                    "已从耳机读取：$resolvedMode"
-                else "0x91 未应答；可从全状态回读",
+                    "当前模式：${resolvedMode.label}"
+                else "暂未获取降噪状态",
                 features = s.features.withStatus("anc", status, "模式可读；写入后回读一致标为真实", mode != null)
             )
         }
@@ -471,7 +476,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         noiseMode = mode,
                         noiseStatus = FeatureStatus.REAL,
-                        noiseDetail = "下发后回读一致：${result.readback.hex}",
+                        noiseDetail = "已切换为 ${mode.label}（耳机已确认）",
                         message = "降噪/环境音已切换为 ${mode.label}。",
                         features = it.features.withStatus("anc", FeatureStatus.REAL, "写入 + 回读一致", true)
                     )
@@ -603,13 +608,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 ?: base.value.eqPresetId
             eqStore.save(resolvedId, custom.gains)
             base.update {
+                val presetLabel = eqPresets.firstOrNull { p -> p.id == resolvedId }?.label ?: resolvedId
                 it.copy(
                     activePresetByte = presetByte ?: custom.presetIndex,
                     eqPresetId = resolvedId,
                     eqGains = custom.gains,
                     eqStatus = FeatureStatus.READ_ONLY,
-                    eqDetail = "已通过 0x42/0x43 多包回读耳机 10 段 EQ 曲线（preset=$resolvedId）",
-                    features = it.features.withStatus("eq", FeatureStatus.READ_ONLY, "0x42/0x43 10 段曲线已读取；写入需回读比对", true)
+                    eqDetail = "已同步 10 段均衡曲线（$presetLabel）",
+                    features = it.features.withStatus("eq", FeatureStatus.READ_ONLY, "10 段均衡曲线已同步", true)
                 )
             }
             return
@@ -620,14 +626,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val a2Cat = a2Frame?.let { EqCodec.parseCategory(it) }
         base.update {
             val st = if (presetByte != null || a2Cat != null) FeatureStatus.READ_ONLY else FeatureStatus.UNVERIFIED
+            val resolvedId = presetByte?.let { b -> EqCodec.presetByteToId(b) } ?: it.eqPresetId
+            val presetLabel = eqPresets.firstOrNull { p -> p.id == resolvedId }?.label ?: "预设"
             it.copy(
                 activePresetByte = presetByte ?: it.activePresetByte,
-                eqPresetId = presetByte?.let { b -> EqCodec.presetByteToId(b) } ?: it.eqPresetId,
+                eqPresetId = resolvedId,
                 eqStatus = st,
                 eqDetail = when {
-                    presetByte != null -> "已读取当前 EQ 预设号 0x%02X（0x43 曲线未返回）".format(presetByte)
-                    a2Cat != null -> "A2 回复当前 EQ category=$a2Cat"
-                    else -> "未收到 0x42/0x43 或 0xA2 EQ 回复"
+                    presetByte != null || a2Cat != null -> "当前均衡器：$presetLabel"
+                    else -> "未获取到均衡器状态"
                 },
                 features = it.features.withStatus("eq", st, it.eqDetail, st != FeatureStatus.UNVERIFIED)
             )
@@ -689,11 +696,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             base.update {
                 val verified = curveResult.verified || presetResult is WriteResult.Verified || a2Verified
                 val newStatus = if (verified) FeatureStatus.REAL else prevStatus
-                val detail = when {
-                    curveResult.verified -> "EQ 预设 ${preset.label} 已下发并通过 0x42/0x43 回读一致"
-                    presetResult is WriteResult.Verified -> "EQ 预设 ${preset.label} 已切换（0x40 -> 0x210134 回读一致）"
-                    a2Verified -> "EQ 预设已通过 A2 写入并回读一致"
-                    else -> "EQ 未确认生效：${curveResult.reason}"
+                val detail = if (verified) {
+                    "已应用「${preset.label}」音效（耳机已确认）"
+                } else {
+                    "EQ 未确认生效：${curveResult.reason}"
                 }
                 if (verified) {
                     it.copy(
@@ -767,7 +773,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             base.update {
                 val st = if (ok) FeatureStatus.REAL else FeatureStatus.UNVERIFIED
                 val msg = if (ok) {
-                    "自定义 10 段 EQ 已写入并通过 0x42/0x43 回读一致。"
+                    "自定义 10 段均衡器已写入耳机并确认。"
                 } else {
                     "自定义 EQ 未确认生效：${result.reason}" +
                         if (switchUser is WriteResult.Verified) "（预设槽已切换至 USER）" else ""
@@ -1378,7 +1384,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun dismissFluidCloud() {
-        FluidCloudNotifier.dismiss(getApplication())
+        FluidCloudNotifier.dismissForSession(getApplication())
         base.update { it.copy(message = "已收起流体云胶囊") }
     }
 
@@ -1391,8 +1397,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             openFluidCloudSettings()
             return
         }
+        FluidCloudNotifier.clearSessionDismissal()
         val effective = ensureMacSnapshotState()
-        TakeoverBridge.pushUiState(ctx, effective, triggerPopup = true, forceOverlay = false)
+        TakeoverBridge.pushUiState(
+            context = ctx,
+            state = effective,
+            triggerPopup = true,
+            forceOverlay = false,
+            triggerMelodyCapsule = _takeoverConfig.value.melodySpoofEnabled
+        )
         triggerBackgroundSyncIfOffline(triggerPopup = true)
         base.update { it.copy(message = "已推送 ColorOS 流体云胶囊与实时通知") }
     }
@@ -1587,7 +1600,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         putExtra("device_mac_info", mac)
                         putExtra("product_id", preset.fallbackProductIdHex)
                         putExtra("device_name", preset.melodyName)
-                        putExtra("product_color", preset.defaultColor)
+                        putExtra("product_color", preset.defaultColor.toString())
                     }
                     val ok = runCatching { ctx.startActivity(intent) }.isSuccess
                     base.update {
@@ -1604,9 +1617,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun updateTakeoverConfig(transform: (TakeoverConfig) -> TakeoverConfig) {
-        val next = transform(_takeoverConfig.value)
+        val prev = _takeoverConfig.value
+        val next = transform(prev)
         _takeoverConfig.value = next
         takeoverPrefs.saveConfig(next)
+        if (!next.useFluidCloud || !next.enabled) {
+            FluidCloudNotifier.dismissForSession(getApplication())
+        } else if (!prev.useFluidCloud && next.useFluidCloud) {
+            FluidCloudNotifier.clearSessionDismissal()
+        }
         TakeoverBridge.pushUiState(getApplication(), state.value, triggerPopup = false)
     }
 
@@ -1754,9 +1773,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 appendStep(
                     DiagStep(
                         key = "paired",
-                        label = "系统蓝牙与权限基线",
-                        status = if (_overlayGranted.value) DiagStatus.PASS else DiagStatus.WARN,
-                        detail = "已配对 ${classic.name ?: "JBL"} · 悬浮窗=${if (_overlayGranted.value) "已授权" else "未授权"}"
+                        label = "系统蓝牙与 ColorOS 基线",
+                        status = DiagStatus.PASS,
+                        detail = "已配对 ${BridgeContract.cleanDisplayName(classic.name)} · " +
+                            "流体云=${if (_fluidCloudReady.value) "已授权" else "未授权"} · " +
+                            "欢律Hook=${if (TakeoverBridge.melodyHookAlive.value) "已握手" else "待激活"}"
                     )
                 )
 
@@ -1770,11 +1791,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     delay(250L)
                     val t0 = System.currentTimeMillis()
-                    val le = scanner.scanForLeSide(adapter)
-                    var ready = if (le != null) connectAndWait(le) else null
+                    var viaLabel = "Classic回退"
+                    var ready: LinkState.Ready? = null
+                    val cachedLeMac = takeoverPrefs.loadSnapshot().leMac
+                    if (cachedLeMac.isNotBlank()) {
+                        val cachedLe = runCatching { adapter.getRemoteDevice(cachedLeMac) }.getOrNull()
+                        if (cachedLe != null) {
+                            ready = connectAndWait(cachedLe)
+                            if (ready != null) {
+                                viaLabel = "缓存LE"
+                            } else {
+                                transport.release()
+                            }
+                        }
+                    }
                     if (ready == null) {
-                        transport.release()
+                        val le = scanner.scanForLeSide(adapter)
+                        if (le != null) {
+                            val snapNow = takeoverPrefs.loadSnapshot()
+                            if (snapNow.leMac != le.address) {
+                                takeoverPrefs.saveSnapshot(snapNow.copy(leMac = le.address))
+                            }
+                            ready = connectAndWait(le)
+                            if (ready != null) {
+                                viaLabel = "扫描LE"
+                            } else {
+                                transport.release()
+                            }
+                        }
+                    }
+                    if (ready == null) {
                         ready = connectAndWait(classic)
+                        if (ready != null) viaLabel = "Classic回退"
                     }
                     val dt = System.currentTimeMillis() - t0
                     if (ready == null) {
@@ -1798,7 +1846,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             label = "BLE GATT 控制建链",
                             status = DiagStatus.PASS,
                             durationMs = dt,
-                            detail = "MTU=${ready.mtu}, via=${if (le != null) "LE侧" else "Classic回退"}"
+                            detail = "MTU=${ready.mtu}, via=$viaLabel"
                         )
                     )
                 } else {

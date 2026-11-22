@@ -34,11 +34,17 @@ class JblBridgeReceiver : BroadcastReceiver() {
         if (action == BridgeContract.ACTION_REMOTE_COMMAND) {
             val cmd = intent.getStringExtra(BridgeContract.EXTRA_CMD) ?: BridgeContract.CMD_CONNECT_AND_SYNC
             if (cmd == BridgeContract.CMD_DISMISS_FLUID_CLOUD) {
-                FluidCloudNotifier.dismiss(context)
+                FluidCloudNotifier.dismissForSession(context)
                 return
             }
             if (!cfg.enabled) return
             val triggerPopup = intent.getBooleanExtra(BridgeContract.EXTRA_TRIGGER_POPUP, false)
+            val findLeft = intent.getBooleanExtra(BridgeContract.EXTRA_FIND_LEFT, false)
+            val findRight = if (intent.hasExtra(BridgeContract.EXTRA_FIND_RIGHT)) {
+                intent.getBooleanExtra(BridgeContract.EXTRA_FIND_RIGHT, false)
+            } else {
+                findLeft
+            }
             val svcIntent = Intent(context, JblBridgeService::class.java).apply {
                 putExtra(BridgeContract.EXTRA_CMD, cmd)
                 putExtra(BridgeContract.EXTRA_TRIGGER_POPUP, triggerPopup)
@@ -48,7 +54,8 @@ class JblBridgeReceiver : BroadcastReceiver() {
                 intent.getStringExtra(BridgeContract.EXTRA_EQ_PRESET)?.let {
                     putExtra(BridgeContract.EXTRA_EQ_PRESET, it)
                 }
-                putExtra(BridgeContract.EXTRA_FIND_LEFT, intent.getBooleanExtra(BridgeContract.EXTRA_FIND_LEFT, false))
+                putExtra(BridgeContract.EXTRA_FIND_LEFT, findLeft)
+                putExtra(BridgeContract.EXTRA_FIND_RIGHT, findRight)
             }
             startBridgeService(context, svcIntent)
             return
@@ -67,6 +74,7 @@ class JblBridgeReceiver : BroadcastReceiver() {
                     return
                 }
                 Log.i(TAG, "JBL Tune 230NC disconnected ($name), stopping bridge & dismissing Fluid Cloud")
+                FluidCloudNotifier.clearSessionDismissal()
                 FluidCloudNotifier.dismiss(context)
                 EarbudsPopupOverlay.dismiss()
                 runCatching { context.stopService(Intent(context, JblBridgeService::class.java)) }
@@ -88,6 +96,7 @@ class JblBridgeReceiver : BroadcastReceiver() {
                 if (now - lastConnectTriggerMs < CONNECT_COOLDOWN_MS) return
                 lastConnectTriggerMs = now
 
+                FluidCloudNotifier.clearSessionDismissal()
                 Log.i(TAG, "JBL Tune 230NC connected ($name / $action), updating Melody hook + Fluid Cloud")
 
                 val wantPrompt = (cfg.useFluidCloud || cfg.autoPopupOnConnect || cfg.melodySpoofEnabled) &&

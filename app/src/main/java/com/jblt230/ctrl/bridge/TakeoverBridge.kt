@@ -21,6 +21,9 @@ object TakeoverBridge {
     val foregroundLinkActive = AtomicBoolean(false)
     val appInForeground = AtomicBoolean(false)
 
+    @Volatile
+    private var lastWirelessSettingsSyncKey: String = ""
+
     private val _melodyHookAlive = MutableStateFlow(false)
     val melodyHookAlive: StateFlow<Boolean> = _melodyHookAlive.asStateFlow()
 
@@ -120,7 +123,10 @@ object TakeoverBridge {
             )
         }
 
-        if (cfg.useFluidCloud && (triggerPopup || controlReady)) {
+        if (triggerPopup) {
+            FluidCloudNotifier.clearSessionDismissal()
+        }
+        if (cfg.useFluidCloud && (triggerPopup || (controlReady && !FluidCloudNotifier.isDismissedForSession))) {
             FluidCloudNotifier.postOrUpdate(
                 context = context,
                 snap = snap,
@@ -173,5 +179,16 @@ object TakeoverBridge {
             putExtra(BridgeContract.EXTRA_TRIGGER_MELODY_CAPSULE, triggerMelodyCapsule)
         }
         runCatching { context.applicationContext.sendBroadcast(intent) }
+
+        val wsKey = "${cfg.melodySpoofEnabled}|${preset.fallbackProductIdHex}"
+        if (wsKey != lastWirelessSettingsSyncKey) {
+            lastWirelessSettingsSyncKey = wsKey
+            val wsIntent = Intent(intent).apply {
+                setPackage(BridgeContract.PKG_WIRELESS_SETTINGS)
+                putExtra(BridgeContract.EXTRA_TRIGGER_MELODY_POPUP, false)
+                putExtra(BridgeContract.EXTRA_TRIGGER_MELODY_CAPSULE, false)
+            }
+            runCatching { context.applicationContext.sendBroadcast(wsIntent) }
+        }
     }
 }

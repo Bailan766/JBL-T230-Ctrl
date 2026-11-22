@@ -32,6 +32,12 @@ object FluidCloudNotifier {
     var lastHasPromotableCharacteristics: Boolean? = null
         private set
 
+    @Volatile
+    private var sessionDismissed: Boolean = false
+
+    val isDismissedForSession: Boolean
+        get() = sessionDismissed
+
     data class FluidCloudStatus(
         val sdkSupported: Boolean,
         val notificationsEnabled: Boolean,
@@ -179,6 +185,15 @@ object FluidCloudNotifier {
         val nm = context.applicationContext
             .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(NOTIFICATION_ID)
+    }
+
+    fun dismissForSession(context: Context) {
+        sessionDismissed = true
+        dismiss(context)
+    }
+
+    fun clearSessionDismissal() {
+        sessionDismissed = false
     }
 
     private fun ensureChannel(nm: NotificationManager) {

@@ -10,6 +10,7 @@ import com.jblt230.ctrl.logging.DiagnosticReportFormatter
 import com.jblt230.ctrl.logging.LogEntry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -225,6 +226,32 @@ class BridgeContractTest {
                 modelName = "OPPO Enco X2",
                 color = 0
             )
+        )
+    }
+
+    @Test
+    fun splitFirmwareTripletFormatsForMelodyParser() {
+        assertEquals(Triple("3", "7", "0"), BridgeContract.splitFirmwareTriplet("3.7.0"))
+        assertEquals(Triple("3", "7", "0"), BridgeContract.splitFirmwareTriplet("v3.7"))
+        assertEquals(Triple("3", "0", "0"), BridgeContract.splitFirmwareTriplet("3"))
+        assertEquals(Triple("3", "7", "0"), BridgeContract.splitFirmwareTriplet("3.7.0.9"))
+        assertNull(BridgeContract.splitFirmwareTriplet(""))
+        assertNull(BridgeContract.splitFirmwareTriplet("unknown"))
+        assertNull(BridgeContract.splitFirmwareTriplet(null))
+    }
+
+    @Test
+    fun bumpOutsideSnapshotVersionAlwaysInvalidatesCache() {
+        val numericBumped = BridgeContract.bumpOutsideSnapshotVersion("100", "063c10")
+        assertEquals("877", numericBumped)
+        assertNotEquals("100", numericBumped)
+
+        assertEquals("v2_jbl_063C10", BridgeContract.bumpOutsideSnapshotVersion("v2", "063c10"))
+        assertEquals("1_jbl_063C10", BridgeContract.bumpOutsideSnapshotVersion("", "063c10"))
+        assertEquals("1_jbl_063C10", BridgeContract.bumpOutsideSnapshotVersion(null, "063C10"))
+        assertNotEquals(
+            BridgeContract.bumpOutsideSnapshotVersion("v2", "063C10"),
+            BridgeContract.bumpOutsideSnapshotVersion("v2", "067410")
         )
     }
 }
